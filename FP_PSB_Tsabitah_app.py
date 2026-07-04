@@ -110,7 +110,7 @@ def load_txt(uploaded):
     return data
 
 
-def build_signals(data, fs_manual=0.0):
+def build_signals(data, fs_manual=0.0, cutoff_lpf=6.0):
     if data.shape[1] < 15:
         raise ValueError("Format minimal 15 kolom: time, heel, toe, hip, knee, ankle, EMG1-EMG9")
 
@@ -141,11 +141,12 @@ def build_signals(data, fs_manual=0.0):
         "ankle_raw": safe_array(data[:, 5]),
         "emg_raw": safe_array(data[:, 6:15]),
     }
-    signals["heel_filt"] = lowpass_filter(signals["heel_raw"], fs, cutoff=6)
-    signals["toe_filt"] = lowpass_filter(signals["toe_raw"], fs, cutoff=6)
-    signals["hip_filt"] = lowpass_filter(signals["hip_raw"], fs, cutoff=6)
-    signals["knee_filt"] = lowpass_filter(signals["knee_raw"], fs, cutoff=6)
-    signals["ankle_filt"] = lowpass_filter(signals["ankle_raw"], fs, cutoff=6)
+    signals["heel_filt"] = lowpass_filter(signals["heel_raw"], fs, cutoff=cutoff_lpf)
+    signals["toe_filt"] = lowpass_filter(signals["toe_raw"], fs, cutoff=cutoff_lpf)
+    signals["hip_filt"] = lowpass_filter(signals["hip_raw"], fs, cutoff=cutoff_lpf)
+    signals["knee_filt"] = lowpass_filter(signals["knee_raw"], fs, cutoff=cutoff_lpf)
+    signals["ankle_filt"] = lowpass_filter(signals["ankle_raw"], fs, cutoff=cutoff_lpf)
+    signals["cutoff_lpf"] = float(cutoff_lpf)
     return signals
 
 
@@ -280,7 +281,7 @@ def clean_combined_onoff(t, env_norm, cycles, threshold):
         pairs=list(zip(on[:min(len(on),len(off))], off[:min(len(on),len(off))]))
     return pairs
 
-def plot_combined_env_clean(t, env_norm, labels, cycles, threshold):
+def plot_combined_env_clean(t, env_norm, labels, cycles, threshold, cutoff_lpf=6.0):
     fig=go.Figure()
     n_ch=env_norm.shape[1]
     for j in range(n_ch):
@@ -290,7 +291,7 @@ def plot_combined_env_clean(t, env_norm, labels, cycles, threshold):
         add_vline_shape(fig, a, "lime", "dash", 1.6, "ON" if k==0 else None)
         add_vline_shape(fig, b, "red", "dash", 1.6, "OFF" if k==0 else None)
     fig.update_yaxes(tickmode="array", tickvals=[i*1.2 for i in range(n_ch)], ticktext=labels)
-    return base_layout_light(fig, "Enveloped Filter (Cutoff: 6.0 Hz) - Fase ON(Hijau) & OFF(Merah)", "Waktu (s)", "", 620)
+    return base_layout_light(fig, f"Enveloped Filter (Cutoff: {cutoff_lpf:.1f} Hz) - Fase ON(Hijau) & OFF(Merah)", "Waktu (s)", "", 620)
 
 def plot_activation_expected(t, env_norm, labels_long, threshold, cycles):
     fig=go.Figure()
@@ -468,7 +469,9 @@ def gait_cycle_mean(t, sig, cycles):
 # =========================================================
 st.sidebar.header("Input Data")
 uploaded = st.sidebar.file_uploader("Upload file TXT", type=["txt", "TXT", "csv"])
-fs_manual = st.sidebar.number_input("Fs manual (opsional, 0 = otomatis)", min_value=0.0, value=0.0, step=100.0, format="%.2f")
+cutoff_lpf = st.sidebar.number_input("Frekuensi cut-off filter LPF (Hz)", min_value=0.1, value=6.0, step=0.5, format="%.1f")
+with st.sidebar.expander("Pengaturan Fs / sampling", expanded=False):
+    fs_manual = st.number_input("Fs manual (opsional, 0 = otomatis)", min_value=0.0, value=0.0, step=100.0, format="%.2f")
 emg_threshold_percent = st.sidebar.slider("Threshold aktivasi EMG (%)", 5.0, 90.0, 5.0, 1.0)
 emg_threshold = emg_threshold_percent / 100.0
 st.sidebar.markdown('<div class="info-card">Format minimal 15 kolom: time, heel, toe, hip, knee, ankle, EMG1-EMG9.</div>', unsafe_allow_html=True)
@@ -482,7 +485,7 @@ if uploaded is None:
 
 try:
     data = load_txt(uploaded)
-    sig = build_signals(data, fs_manual)
+    sig = build_signals(data, fs_manual, cutoff_lpf)
 except Exception as e:
     st.error(f"Data gagal dibaca: {e}")
     st.stop()
@@ -495,13 +498,14 @@ toe_norm = normalize(sig["toe_filt"])
 heel_on, heel_off = crossing_times(t, heel_norm, 0.05)
 toe_on, toe_off = crossing_times(t, toe_norm, 0.05)
 cycles = get_cycles(t, heel_norm, 0.05, max_cycles=9)
-emg_rect, emg_env_raw, emg_env_norm = emg_processing(sig["emg_raw"], fs, cutoff=6.0)
+emg_rect, emg_env_raw, emg_env_norm = emg_processing(sig["emg_raw"], fs, cutoff=cutoff_lpf)
 
 temp_df = temporal_table(t, heel_norm, toe_norm, 0.05)
 cycle_mean = float(temp_df["gait_cycle_time"].mean()) if not temp_df.empty else 0.0
 cadence = 60 / cycle_mean if cycle_mean > 0 else 0.0
 st.sidebar.markdown(f'<div class="metric-card">Jumlah Data: {len(data)}</div>', unsafe_allow_html=True)
-st.sidebar.write(f"**Fs:** {fs:.3f} Hz")
+st.sidebar.write(f"**Cut-off LPF:** {cutoff_lpf:.1f} Hz")
+st.sidebar.write(f"**Fs data:** {fs:.3f} Hz")
 st.sidebar.write(f"**Gait Cycle rata-rata:** {cycle_mean:.3f} s")
 st.sidebar.write(f"**Cadence:** {cadence:.2f} step/min")
 
@@ -537,7 +541,7 @@ with tabs[0]:
         )
 
         st.plotly_chart(
-            plot_fsr_expected(t, sig["heel_filt"], sig["toe_filt"], "OUTPUT / HASIL FILTERING (Cutoff: 6.0 Hz)"),
+            plot_fsr_expected(t, sig["heel_filt"], sig["toe_filt"], f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"),
             use_container_width=True,
             key="gait_fsr_expected_output"
         )
@@ -585,12 +589,12 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("DYNAMIC EMG")
     pilihan = st.selectbox("Pilih sinyal:", ["GABUNGAN 9 OTOT"] + MUSCLE_SHORT, key="dynamic_emg_selectbox")
-    st.caption(f"Cutoff envelope: 6.0 Hz | Threshold aktivasi: {emg_threshold_percent:.1f}%")
+    st.caption(f"Cutoff envelope LPF: {cutoff_lpf:.1f} Hz | Threshold aktivasi: {emg_threshold_percent:.1f}%")
 
     if pilihan == "GABUNGAN 9 OTOT":
         st.plotly_chart(plot_stacked(t, sig["emg_raw"], MUSCLE_SHORT, "RAW EMG SIGNAL - GABUNGAN 9 OTOT", height=520, line_color="royalblue"), use_container_width=True, key="dynamic_combined_raw_v2")
         st.plotly_chart(plot_stacked(t, emg_rect, MUSCLE_SHORT, "RECTIFICATION - GABUNGAN 9 OTOT", height=520, line_color="orange"), use_container_width=True, key="dynamic_combined_rect_v2")
-        st.plotly_chart(plot_combined_env_clean(t, emg_env_norm, MUSCLE_SHORT, cycles, emg_threshold), use_container_width=True, key="dynamic_combined_env_clean_v2")
+        st.plotly_chart(plot_combined_env_clean(t, emg_env_norm, MUSCLE_SHORT, cycles, emg_threshold, cutoff_lpf), use_container_width=True, key="dynamic_combined_env_clean_v2")
         st.plotly_chart(plot_activation_expected(t, emg_env_norm, MUSCLE_LONG, emg_threshold, cycles), use_container_width=True, key="dynamic_combined_activation_expected_v2")
     else:
         idx = MUSCLE_SHORT.index(pilihan)
@@ -607,7 +611,7 @@ with tabs[1]:
             add_vline(fig_env, a, "lime", "dash", 1.2, "ON" if k == 0 else None)
             add_vline(fig_env, b, "red", "dash", 1.2, "OFF" if k == 0 else None)
         fig_env.update_yaxes(range=[-0.08, 1.08])
-        st.plotly_chart(base_layout(fig_env, f"ENVELOPED FILTER - {pilihan} (Cutoff: 6.0 Hz) - ON/OFF Tiap Cycle", "time (sec)", "Normalized EMG", 350), use_container_width=True, key=f"dynamic_{pilihan}_env")
+        st.plotly_chart(base_layout(fig_env, f"ENVELOPED FILTER - {pilihan} (Cutoff: {cutoff_lpf:.1f} Hz) - ON/OFF Tiap Cycle", "time (sec)", "Normalized EMG", 350), use_container_width=True, key=f"dynamic_{pilihan}_env")
 
         fig_act = go.Figure()
         for k, (a, b) in enumerate(segs):
