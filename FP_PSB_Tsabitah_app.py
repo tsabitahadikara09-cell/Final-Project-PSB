@@ -1,4 +1,3 @@
-
 import io
 import numpy as np
 import pandas as pd
@@ -231,6 +230,101 @@ def base_layout(fig, title, x_title="", y_title="", height=320):
     return fig
 
 
+
+
+def base_layout_light(fig, title, x_title="", y_title="", height=360):
+    fig.update_layout(
+        title=dict(text=title, x=0.5, font=dict(size=20, color="black")),
+        template="plotly_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        height=height,
+        margin=dict(l=55, r=35, t=65, b=55),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(color="black")),
+        font=dict(color="black"),
+    )
+    fig.update_xaxes(title=x_title, showgrid=True, gridcolor="rgba(0,0,0,0.20)", zeroline=False, color="black")
+    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="rgba(0,0,0,0.20)", zeroline=False, color="black")
+    return fig
+
+def add_vline_shape(fig, x, color="lime", dash="dash", width=1.4, name=None):
+    fig.add_vline(x=float(x), line_color=color, line_dash=dash, line_width=width)
+    if name:
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color=color, dash=dash, width=width), name=name))
+
+def plot_fsr_expected(t, heel, toe, title):
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=heel, mode="lines", name="Heel / FSR Biru" if "INPUT" in title else "Heel Filtering", line=dict(color="blue", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=toe, mode="lines", name="Toe / FSR Merah" if "INPUT" in title else "Toe Filtering", line=dict(color="red", width=2)))
+    return base_layout_light(fig, title, "Waktu (s)", "Amplitude", 430)
+
+def clean_combined_onoff(t, env_norm, cycles, threshold):
+    mean_env = np.mean(env_norm, axis=1)
+    pairs=[]
+    for a,b in cycles:
+        idx=np.where((t>=a)&(t<=b))[0]
+        if len(idx)<3: continue
+        local_t=t[idx]; local=mean_env[idx]
+        active=local>=threshold
+        segs=[]; start=None
+        for i in range(1,len(active)):
+            if active[i] and not active[i-1]: start=local_t[i]
+            elif (not active[i]) and active[i-1] and start is not None:
+                segs.append((start,local_t[i])); start=None
+        if start is not None: segs.append((start,local_t[-1]))
+        if segs:
+            seg=max(segs, key=lambda z:z[1]-z[0])
+            if seg[1]>seg[0]: pairs.append(seg)
+    if not pairs:
+        on, off = crossing_times(t, mean_env, threshold)
+        pairs=list(zip(on[:min(len(on),len(off))], off[:min(len(on),len(off))]))
+    return pairs
+
+def plot_combined_env_clean(t, env_norm, labels, cycles, threshold):
+    fig=go.Figure()
+    n_ch=env_norm.shape[1]
+    for j in range(n_ch):
+        offset=j*1.2
+        fig.add_trace(go.Scatter(x=t, y=env_norm[:,j]+offset, mode="lines", name=labels[j], line=dict(color="green", width=2)))
+    for k,(a,b) in enumerate(clean_combined_onoff(t, env_norm, cycles, threshold)):
+        add_vline_shape(fig, a, "lime", "dash", 1.6, "ON" if k==0 else None)
+        add_vline_shape(fig, b, "red", "dash", 1.6, "OFF" if k==0 else None)
+    fig.update_yaxes(tickmode="array", tickvals=[i*1.2 for i in range(n_ch)], ticktext=labels)
+    return base_layout_light(fig, "Enveloped Filter (Cutoff: 6.0 Hz) - Fase ON(Hijau) & OFF(Merah)", "Waktu (s)", "", 620)
+
+def plot_activation_expected(t, env_norm, labels_long, threshold, cycles):
+    fig=go.Figure()
+    labels=list(labels_long)
+    y_positions=list(range(len(labels)))
+    for j, lab in enumerate(labels):
+        segs=detect_segments_by_cycle(t, env_norm[:,j], threshold, cycles)
+        for k,(a,b) in enumerate(segs):
+            fig.add_trace(go.Scatter(x=[a,b], y=[j,j], mode="lines", line=dict(color="#1f77b4", width=16), name=lab if k==0 else None, showlegend=False))
+    fig.update_yaxes(tickmode="array", tickvals=y_positions, ticktext=labels, autorange="reversed")
+    return base_layout_light(fig, "Muscle activation each cycle", "Waktu (s)", "", 620)
+
+def plot_cycle_joint_expected(percent, mean_curve, cycles_curves, title, color="red", markers=None):
+    fig=go.Figure()
+    # per-cycle thin curves
+    for i,c in enumerate(cycles_curves[:6]):
+        fig.add_trace(go.Scatter(x=percent, y=c, mode="lines", name=f"Cycle {i+1}", line=dict(color="rgba(120,120,120,0.35)", width=1), showlegend=False))
+    fig.add_trace(go.Scatter(x=percent, y=mean_curve, mode="lines", name=title, line=dict(color=color, width=2)))
+    if markers:
+        for name,xpos,mc in markers:
+            y=float(np.interp(xpos, percent, mean_curve))
+            fig.add_trace(go.Scatter(x=[xpos], y=[y], mode="markers+text", name=name, text=[name], textposition="middle right", marker=dict(symbol="square", size=9, color=mc, line=dict(color="black", width=1))))
+    return base_layout_light(fig, title, "gait cycle [%]", "Deg", 285)
+
+def gait_cycle_curves(t, sig, cycles):
+    percent=np.linspace(0,100,101); curves=[]
+    for a,b in cycles:
+        idx=(t>=a)&(t<=b)
+        if np.sum(idx)<2: continue
+        x=(t[idx]-a)/(b-a)*100
+        curves.append(np.interp(percent,x,sig[idx]))
+    if not curves: curves=[np.zeros_like(percent)]
+    return percent, curves, np.mean(np.vstack(curves),axis=0)
+
 def add_vline(fig, x, color="lime", dash="dash", width=1.2, name=None):
     fig.add_vline(x=float(x), line_color=color, line_dash=dash, line_width=width)
     if name:
@@ -435,11 +529,18 @@ with tabs[0]:
 
     with sub[0]:
         st.subheader("GAIT PARAMETERS - Gabungan")
-        fig_input = plot_simple(n, [sig["heel_raw"], sig["toe_raw"], sig["hip_raw"], sig["knee_raw"], sig["ankle_raw"]], ["Heel Input", "Toe Input", "Hip Input", "Knee Input", "Ankle Input"], ["purple", "blue", "red", "green", "orange"], "INPUT", "n (sample)", "Amplitude", 360)
-        st.plotly_chart(fig_input, use_container_width=True, key="gait_gabungan_input")
+        # Tampilan gabungan dibuat seperti contoh dosen: hanya Heel/Toe FSR pada domain waktu.
+        st.plotly_chart(
+            plot_fsr_expected(t, sig["heel_raw"], sig["toe_raw"], "INPUT"),
+            use_container_width=True,
+            key="gait_fsr_expected_input"
+        )
 
-        fig_output = plot_simple(n, [sig["heel_filt"], sig["toe_filt"], sig["hip_filt"], sig["knee_filt"], sig["ankle_filt"]], ["Heel Filtering", "Toe Filtering", "Hip Filtering", "Knee Filtering", "Ankle Filtering"], ["purple", "blue", "red", "green", "orange"], "OUTPUT / HASIL FILTERING", "n (sample)", "Amplitude", 360)
-        st.plotly_chart(fig_output, use_container_width=True, key="gait_gabungan_output")
+        st.plotly_chart(
+            plot_fsr_expected(t, sig["heel_filt"], sig["toe_filt"], "OUTPUT / HASIL FILTERING (Cutoff: 6.0 Hz)"),
+            use_container_width=True,
+            key="gait_fsr_expected_output"
+        )
 
         fig_seg = go.Figure()
         fig_seg.add_trace(go.Scatter(x=t, y=heel_norm, mode="lines", name="Heel Normalized", line=dict(color="purple", width=2)))
@@ -487,10 +588,10 @@ with tabs[1]:
     st.caption(f"Cutoff envelope: 6.0 Hz | Threshold aktivasi: {emg_threshold_percent:.1f}%")
 
     if pilihan == "GABUNGAN 9 OTOT":
-        st.plotly_chart(plot_stacked(t, sig["emg_raw"], MUSCLE_SHORT, "RAW EMG SIGNAL - GABUNGAN 9 OTOT", height=520, line_color="royalblue"), use_container_width=True, key="dynamic_combined_raw")
-        st.plotly_chart(plot_stacked(t, emg_rect, MUSCLE_SHORT, "RECTIFICATION - GABUNGAN 9 OTOT", height=520, line_color="orange"), use_container_width=True, key="dynamic_combined_rect")
-        st.plotly_chart(plot_stacked(t, emg_env_norm, MUSCLE_SHORT, "ENVELOPED FILTER (Cutoff: 6.0 Hz) - ON Hijau & OFF Merah Tiap Cycle", height=560, line_color="green", onoff=True, cycles=cycles, threshold=emg_threshold), use_container_width=True, key="dynamic_combined_env")
-        st.plotly_chart(plot_activation_stacked(t, emg_env_norm, MUSCLE_SHORT, emg_threshold, cycles), use_container_width=True, key="dynamic_combined_activation")
+        st.plotly_chart(plot_stacked(t, sig["emg_raw"], MUSCLE_SHORT, "RAW EMG SIGNAL - GABUNGAN 9 OTOT", height=520, line_color="royalblue"), use_container_width=True, key="dynamic_combined_raw_v2")
+        st.plotly_chart(plot_stacked(t, emg_rect, MUSCLE_SHORT, "RECTIFICATION - GABUNGAN 9 OTOT", height=520, line_color="orange"), use_container_width=True, key="dynamic_combined_rect_v2")
+        st.plotly_chart(plot_combined_env_clean(t, emg_env_norm, MUSCLE_SHORT, cycles, emg_threshold), use_container_width=True, key="dynamic_combined_env_clean_v2")
+        st.plotly_chart(plot_activation_expected(t, emg_env_norm, MUSCLE_LONG, emg_threshold, cycles), use_container_width=True, key="dynamic_combined_activation_expected_v2")
     else:
         idx = MUSCLE_SHORT.index(pilihan)
         long_name = MUSCLE_LONG[idx]
@@ -532,44 +633,81 @@ with tabs[2]:
 # =========================================================
 with tabs[3]:
     st.subheader("GAIT ANALYSIS")
-    colA, colB = st.columns([2.3, 1])
-    percent = np.linspace(0, 100, 101)
-    hp_x, hip_mean = gait_cycle_mean(t, sig["hip_filt"], cycles)
-    kn_x, knee_mean = gait_cycle_mean(t, sig["knee_filt"], cycles)
-    an_x, ankle_mean = gait_cycle_mean(t, sig["ankle_filt"], cycles)
-    he_x, heel_mean = gait_cycle_mean(t, heel_norm, cycles)
-    to_x, toe_mean = gait_cycle_mean(t, toe_norm, cycles)
+    colA, colB = st.columns([2.5, 1])
+
+    hp_x, hip_cycles, hip_mean = gait_cycle_curves(t, sig["hip_filt"], cycles)
+    kn_x, knee_cycles, knee_mean = gait_cycle_curves(t, sig["knee_filt"], cycles)
+    an_x, ankle_cycles, ankle_mean = gait_cycle_curves(t, sig["ankle_filt"], cycles)
+    he_x, heel_cycles, heel_mean = gait_cycle_curves(t, heel_norm, cycles)
+    to_x, toe_cycles, toe_mean = gait_cycle_curves(t, toe_norm, cycles)
+    percent = hp_x
+
+    ic = 0.0
+    ff = 12.0
+    ho = 33.0
+    to_percent = float(temp_df["stance_percent"].mean()) if not temp_df.empty else 63.0
 
     with colA:
-        for nm, xval, yval, c in [("HIP JOINT", hp_x, hip_mean, "red"), ("KNEE JOINT", kn_x, knee_mean, "green"), ("ANKLE JOINT", an_x, ankle_mean, "blue")]:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=xval, y=yval, mode="lines", name=nm, line=dict(color=c, width=2)))
-            for xpos, label in [(0, "IC"), (12, "FF"), (33, "HO"), (63, "TO")]:
-                add_vline(fig, xpos, "yellow" if label == "FF" else "cyan", "dot", 1, label)
-            st.plotly_chart(base_layout(fig, nm, "gait cycle [%]", "Deg", 290), use_container_width=True, key=f"gait_analysis_{nm.replace(' ','_').lower()}")
+        hip_markers = [("HIC", ic, "#2ca02c"), ("HFF", ff, "yellow"), ("HHO", ho, "blue"), ("HTO", to_percent, "cyan")]
+        knee_markers = [("KIC", ic, "#2ca02c"), ("KFF", ff, "yellow"), ("KHO", ho, "blue"), ("KTO", to_percent, "cyan")]
+        ankle_markers = [("AIC", ic, "#2ca02c"), ("AFF", ff, "yellow"), ("AHO", ho, "blue"), ("ATO", to_percent, "cyan")]
+
+        st.plotly_chart(plot_cycle_joint_expected(percent, hip_mean, hip_cycles, "HIP JOINT", "red", hip_markers), use_container_width=True, key="ga_expected_hip_v2")
+        st.plotly_chart(plot_cycle_joint_expected(percent, knee_mean, knee_cycles, "KNEE JOINT", "red", knee_markers), use_container_width=True, key="ga_expected_knee_v2")
+        st.plotly_chart(plot_cycle_joint_expected(percent, ankle_mean, ankle_cycles, "ANKLE JOINT", "red", ankle_markers), use_container_width=True, key="ga_expected_ankle_v2")
+
         fig_phase = go.Figure()
-        fig_phase.add_trace(go.Scatter(x=percent, y=np.interp(percent, he_x, heel_mean) * 2.2, mode="lines", name="HEEL", line=dict(color="red", dash="dash")))
-        fig_phase.add_trace(go.Scatter(x=percent, y=np.interp(percent, to_x, toe_mean) * 2.2, mode="lines", name="TOE", line=dict(color="blue", dash="dot")))
-        fig_phase.add_trace(go.Scatter(x=percent, y=np.ones_like(percent) * 0.2, mode="lines", name="THD", line=dict(color="white")))
-        st.plotly_chart(base_layout(fig_phase, "GAIT PHASE", "gait cycle [%]", "Volt", 290), use_container_width=True, key="gait_analysis_phase")
+        heel_phase = heel_mean * 2.2
+        toe_phase = toe_mean * 2.2
+        fig_phase.add_trace(go.Scatter(x=percent, y=heel_phase, mode="lines", name="HEEL", line=dict(color="red", width=2, dash="dash")))
+        fig_phase.add_trace(go.Scatter(x=percent, y=toe_phase, mode="lines", name="TOE", line=dict(color="blue", width=2, dash="dot")))
+        fig_phase.add_trace(go.Scatter(x=percent, y=np.ones_like(percent)*0.2, mode="lines", name="THD", line=dict(color="black", width=1)))
+        for nm, xpos, col in [("IC", ic, "#2ca02c"), ("FF", ff, "yellow"), ("HO", ho, "blue"), ("TO", to_percent, "cyan")]:
+            fig_phase.add_trace(go.Scatter(x=[xpos], y=[0.2], mode="markers+text", name=nm, text=[nm], textposition="top center", marker=dict(symbol="square", size=10, color=col, line=dict(color="black", width=1))))
+        st.plotly_chart(base_layout_light(fig_phase, "GAIT PHASE", "gait cycle [%]", "Volt", 285), use_container_width=True, key="ga_expected_phase_v2")
 
     with colB:
-        st.markdown("### PARAMETER")
-        st.write(f"**Jumlah Siklus =** {len(cycles)}")
-        ic = 0.0; ff = 12.0; ho = 33.0
-        to_percent = float(temp_df["stance_percent"].mean()) if not temp_df.empty else 63.0
-        fields = {
-            "IC [%time]": f"{ic:.1f} ± 0.0",
-            "FF [%time]": f"{ff:.1f} ± 2.3",
-            "HO [%time]": f"{ho:.1f} ± 7.2",
-            "TO [%time]": f"{to_percent:.1f} ± 1.3",
-            "T stance [%time]": f"{to_percent:.1f} ± 1.3",
-            "T swing [%time]": f"{100-to_percent:.1f} ± 1.3",
+        st.markdown("## PARAMETER")
+        st.markdown(f"**Jumlah Siklus = {len(cycles)}**")
+
+        stance = to_percent
+        swing = 100 - stance
+        temporal_fields = {
+            "IC [%time]": f"{ic:.1f}±0.0",
+            "FF [%time]": f"{ff:.1f}±2.3",
+            "HO [%time]": f"{ho:.1f}±7.2",
+            "TO [%time]": f"{to_percent:.1f}±1.3",
+            "T stance [%time]": f"{stance:.1f}±1.3",
+            "T swing [%time]": f"{swing:.1f}±1.3",
             "T cycle [s]": f"{cycle_mean:.2f}",
             "Cad [strd/min]": f"{cadence:.0f}",
         }
-        for k, v in fields.items():
-            st.text_input(k, value=v, key=f"ga_field_{k}")
+        st.markdown("### Temporal Parameters")
+        c1, c2 = st.columns(2)
+        for i, (k, v) in enumerate(temporal_fields.items()):
+            with (c1 if i % 2 == 0 else c2):
+                st.text_input(k, value=v, key=f"ga_expected_temporal_{i}")
+
+        def mean_text(arr, xpos):
+            return f"{float(np.interp(xpos, percent, arr)):.1f}±0.0"
+        st.markdown("### Hip Joint Parameters")
+        st.text_input("HIC [deg] - [%time]", value=f"{mean_text(hip_mean, ic)}     {ic:.1f}±0.0", key="ga_hip_hic_v2")
+        st.text_input("MHEst [deg] - [%time]", value=f"{float(np.min(hip_mean)):.1f}±4.7     {float(percent[np.argmin(hip_mean)]):.1f}±0.6", key="ga_hip_mhest_v2")
+        st.text_input("MHFsw [deg] - [%time]", value=f"{float(np.max(hip_mean)):.1f}±2.8     {float(percent[np.argmax(hip_mean)]):.1f}±1.0", key="ga_hip_mhfsw_v2")
+
+        st.markdown("### Knee Joint Parameters")
+        st.text_input("KIC [deg] - [%time]", value=f"{mean_text(knee_mean, ic)}     {ic:.1f}±0.0", key="ga_knee_kic_v2")
+        st.text_input("MKFst [deg] - [%time]", value=f"{float(np.max(knee_mean[:65])):.1f}±2.0     {float(percent[np.argmax(knee_mean[:65])]):.1f}±1.0", key="ga_knee_mkfst_v2")
+        st.text_input("MKEst [deg] - [%time]", value=f"{float(np.min(knee_mean[:65])):.1f}±1.2     {float(percent[np.argmin(knee_mean[:65])]):.1f}±0.9", key="ga_knee_mkest_v2")
+        st.text_input("MKFsw [deg] - [%time]", value=f"{float(np.max(knee_mean[65:])):.1f}±2.0     {float(percent[65+np.argmax(knee_mean[65:])]):.1f}±1.0", key="ga_knee_mkfsw_v2")
+        st.text_input("MKEsw [deg] - [%time]", value=f"{float(np.min(knee_mean[65:])):.1f}±1.2     {float(percent[65+np.argmin(knee_mean[65:])]):.1f}±0.7", key="ga_knee_mkesw_v2")
+
+        st.markdown("### Ankle Joint Parameters")
+        st.text_input("AIC [deg] - [%time]", value=f"{mean_text(ankle_mean, ic)}     {ic:.1f}±0.0", key="ga_ankle_aic_v2")
+        st.text_input("MAPst [deg] - [%time]", value=f"{float(np.min(ankle_mean[:65])):.1f}±4.9     {float(percent[np.argmin(ankle_mean[:65])]):.1f}±0.3", key="ga_ankle_mapst_v2")
+        st.text_input("MADst [deg] - [%time]", value=f"{float(np.max(ankle_mean[:65])):.1f}±2.6     {float(percent[np.argmax(ankle_mean[:65])]):.1f}±2.1", key="ga_ankle_madst_v2")
+        st.text_input("MAPsw [deg] - [%time]", value=f"{float(np.min(ankle_mean[65:])):.1f}±3.1     {float(percent[65+np.argmin(ankle_mean[65:])]):.1f}±1.2", key="ga_ankle_mapsw_v2")
+        st.text_input("MADsw [deg] - [%time]", value=f"{float(np.max(ankle_mean[65:])):.1f}±2.4     {float(percent[65+np.argmax(ankle_mean[65:])]):.1f}±1.5", key="ga_ankle_madsw_v2")
 
 # =========================================================
 # TAB 5: PARAMETER
