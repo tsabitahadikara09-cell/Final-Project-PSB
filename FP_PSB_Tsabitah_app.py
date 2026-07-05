@@ -7,12 +7,18 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+# =========================================================
+# FP PSB - GAIT PARAMETER EXTRACTION & DYNAMIC EMG
+# Streamlit single-file version
+# =========================================================
+
 st.set_page_config(
     page_title="FP PSB - Gait Parameter Extraction & Dynamic EMG",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# ======================== STYLE ==========================
 st.markdown(
     """
     <style>
@@ -251,6 +257,54 @@ def make_heel_toe_plot(t, heel, toe, title, height=360):
     return dark_layout(fig, title, "Waktu (s)", "Amplitude", height)
 
 
+
+
+def make_single_signal_plot(x, signal, title, line_name, color, x_title="Waktu (s)", y_title="Amplitude", height=340):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=signal, mode="lines", name=line_name, line=dict(color=color, width=2)))
+    return dark_layout(fig, title, x_title, y_title, height)
+
+
+def make_heel_toe_threshold_plot(t, heel, toe, threshold=0.05, title="HEEL & TOE THRESHOLDING", height=360):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=heel, mode="lines", name="Heel Filtering", line=dict(color="blue", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=toe, mode="lines", name="Toe Filtering", line=dict(color="red", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=[threshold] * len(t), mode="lines", name="Threshold 0.05", line=dict(color="gray", width=1.4, dash="dash")))
+    fig = dark_layout(fig, title, "Waktu (s)", "Amplitude", height)
+    fig.update_yaxes(range=[-0.05, 1.05])
+    return fig
+
+
+def make_single_threshold_plot(t, signal, threshold=0.05, title="THRESHOLDING", line_name="Filtering", color="blue", height=350):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=signal, mode="lines", name=line_name, line=dict(color=color, width=2)))
+    fig.add_trace(go.Scatter(x=t, y=[threshold] * len(t), mode="lines", name="Threshold 0.05", line=dict(color="gray", width=1.4, dash="dash")))
+    fig = dark_layout(fig, title, "Waktu (s)", "Amplitude", height)
+    fig.update_yaxes(range=[-0.05, 1.05])
+    return fig
+
+
+def make_heel_toe_phase_detection_plot(t, heel, toe, heel_on, heel_off, toe_on, toe_off, threshold=0.05, title="HEEL & TOE PHASE DETECTION", height=390):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=heel, mode="lines", name="Heel Normalized", line=dict(color="blue", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=toe, mode="lines", name="Toe Normalized", line=dict(color="red", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=[threshold] * len(t), mode="lines", name="Threshold 0.05", line=dict(color="gray", width=1.2, dash="dash")))
+    for x in heel_on:
+        fig.add_vline(x=x, line_color="lime", line_width=1.2, line_dash="dash")
+    for x in heel_off:
+        fig.add_vline(x=x, line_color="red", line_width=1.2, line_dash="dash")
+    for x in toe_on:
+        fig.add_vline(x=x, line_color="cyan", line_width=1.2, line_dash="dot")
+    for x in toe_off:
+        fig.add_vline(x=x, line_color="orange", line_width=1.2, line_dash="dot")
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="Heel ON", line=dict(color="lime", width=2, dash="dash")))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="Heel OFF", line=dict(color="red", width=2, dash="dash")))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="Toe ON", line=dict(color="cyan", width=2, dash="dot")))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="Toe OFF", line=dict(color="orange", width=2, dash="dot")))
+    fig = dark_layout(fig, title, "Waktu (s)", "Amplitude", height)
+    fig.update_yaxes(range=[-0.05, 1.05])
+    return fig
+
 def make_phase_detection_plot(t, signal, on_times, off_times, title, line_name, color):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=signal, mode="lines", name=line_name, line=dict(color=color, width=2.4)))
@@ -464,35 +518,91 @@ tab_gait, tab_emg, tab_pre, tab_cycle_param, tab_stft = st.tabs([
 # ===================== TAB GAIT ==========================
 with tab_gait:
     subt1, subt2, subt3, subt4 = st.tabs(["Gabungan", "Heel", "Toe", "Joint Angle"])
+
+    # ===== GABUNGAN: hanya Heel & Toe sesuai revisi =====
     with subt1:
-        input_signals = {
-            "Heel Input": heel_norm,
-            "Toe Input": toe_norm,
-            "Hip Input": hip_raw,
-            "Knee Input": knee_raw,
-            "Ankle Input": ankle_raw,
-        }
-        colors = {"Heel Input":"purple", "Toe Input":"blue", "Hip Input":"red", "Knee Input":"green", "Ankle Input":"orange"}
-        st.plotly_chart(plot_multi_input_output(n, input_signals, "INPUT", "n (sample)", "Amplitude", colors), use_container_width=True, key="gait_input_all")
-        out_signals = {
-            "Heel Filtering": heel_filt,
-            "Toe Filtering": toe_filt,
-            "Hip Filtering": hip_filt,
-            "Knee Filtering": knee_filt,
-            "Ankle Filtering": ankle_filt,
-        }
-        colors2 = {"Heel Filtering":"purple", "Toe Filtering":"blue", "Hip Filtering":"red", "Knee Filtering":"green", "Ankle Filtering":"orange"}
-        st.plotly_chart(plot_multi_input_output(n, out_signals, f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude", colors2), use_container_width=True, key="gait_output_all")
-        st.plotly_chart(make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE INPUT"), use_container_width=True, key="heel_toe_input_dark")
-        st.plotly_chart(make_heel_toe_plot(t_sec, heel_filt, toe_filt, f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"), use_container_width=True, key="heel_toe_output_dark")
+        st.plotly_chart(
+            make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE INPUT"),
+            use_container_width=True,
+            key="gab_heel_toe_input"
+        )
+        st.plotly_chart(
+            make_heel_toe_plot(t_sec, heel_filt, toe_filt, f"HEEL & TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"),
+            use_container_width=True,
+            key="gab_heel_toe_output"
+        )
+        st.plotly_chart(
+            make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE NORMALIZED"),
+            use_container_width=True,
+            key="gab_heel_toe_normalized"
+        )
+        st.plotly_chart(
+            make_heel_toe_threshold_plot(t_sec, heel_filt, toe_filt, threshold=0.05, title="HEEL & TOE THRESHOLDING 5%"),
+            use_container_width=True,
+            key="gab_heel_toe_thresholding"
+        )
+        st.plotly_chart(
+            make_heel_toe_phase_detection_plot(t_sec, heel_filt, toe_filt, heel_on, heel_off, toe_on, toe_off, threshold=0.05),
+            use_container_width=True,
+            key="gab_heel_toe_phase_detection"
+        )
+
+    # ===== HEEL sendiri: input, output, normalized, thresholding, phase detection =====
     with subt2:
-        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=heel_raw, mode="lines", name="Heel Input", line=dict(color="blue"))]), "HEEL INPUT", "n (sample)", "Amplitude"), use_container_width=True, key="heel_raw")
-        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=heel_filt, mode="lines", name="Heel Filtering", line=dict(color="blue"))]), f"HEEL OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude"), use_container_width=True, key="heel_output")
-        st.plotly_chart(make_phase_detection_plot(t_sec, heel_filt, heel_on, heel_off, "HEEL PHASE DETECTION 5%", "Heel Filtering", "blue"), use_container_width=True, key="heel_phase_detection")
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, heel_raw, "HEEL INPUT", "Heel Input", "blue"),
+            use_container_width=True,
+            key="heel_input_only"
+        )
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, heel_filt, f"HEEL OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "Heel Filtering", "blue"),
+            use_container_width=True,
+            key="heel_output_only"
+        )
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, heel_norm, "HEEL NORMALIZED", "Heel Normalized", "blue"),
+            use_container_width=True,
+            key="heel_normalized_only"
+        )
+        st.plotly_chart(
+            make_single_threshold_plot(t_sec, heel_filt, threshold=0.05, title="HEEL THRESHOLDING 5%", line_name="Heel Filtering", color="blue"),
+            use_container_width=True,
+            key="heel_thresholding_only"
+        )
+        st.plotly_chart(
+            make_phase_detection_plot(t_sec, heel_filt, heel_on, heel_off, "HEEL PHASE DETECTION 5%", "Heel Filtering", "blue"),
+            use_container_width=True,
+            key="heel_phase_detection"
+        )
+
+    # ===== TOE sendiri: input, output, normalized, thresholding, phase detection =====
     with subt3:
-        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=toe_raw, mode="lines", name="Toe Input", line=dict(color="red"))]), "TOE INPUT", "n (sample)", "Amplitude"), use_container_width=True, key="toe_raw")
-        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=toe_filt, mode="lines", name="Toe Filtering", line=dict(color="red"))]), f"TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude"), use_container_width=True, key="toe_output")
-        st.plotly_chart(make_phase_detection_plot(t_sec, toe_filt, toe_on, toe_off, "TOE PHASE DETECTION 5%", "Toe Filtering", "red"), use_container_width=True, key="toe_phase_detection")
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, toe_raw, "TOE INPUT", "Toe Input", "red"),
+            use_container_width=True,
+            key="toe_input_only"
+        )
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, toe_filt, f"TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "Toe Filtering", "red"),
+            use_container_width=True,
+            key="toe_output_only"
+        )
+        st.plotly_chart(
+            make_single_signal_plot(t_sec, toe_norm, "TOE NORMALIZED", "Toe Normalized", "red"),
+            use_container_width=True,
+            key="toe_normalized_only"
+        )
+        st.plotly_chart(
+            make_single_threshold_plot(t_sec, toe_filt, threshold=0.05, title="TOE THRESHOLDING 5%", line_name="Toe Filtering", color="red"),
+            use_container_width=True,
+            key="toe_thresholding_only"
+        )
+        st.plotly_chart(
+            make_phase_detection_plot(t_sec, toe_filt, toe_on, toe_off, "TOE PHASE DETECTION 5%", "Toe Filtering", "red"),
+            use_container_width=True,
+            key="toe_phase_detection"
+        )
+
     with subt4:
         st.plotly_chart(plot_multi_input_output(n, {"Hip Input": hip_raw, "Knee Input": knee_raw, "Ankle Input": ankle_raw}, "JOINT ANGLE INPUT", "n (sample)", "Degree", {"Hip Input":"red","Knee Input":"green","Ankle Input":"blue"}), use_container_width=True, key="joint_input")
         st.plotly_chart(plot_multi_input_output(n, {"Hip Filtering": hip_filt, "Knee Filtering": knee_filt, "Ankle Filtering": ankle_filt}, f"JOINT ANGLE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Degree", {"Hip Filtering":"red","Knee Filtering":"green","Ankle Filtering":"blue"}), use_container_width=True, key="joint_output")
@@ -549,10 +659,8 @@ with tab_cycle_param:
         heel_cycle = interp_cycle_signal(t_sec, heel_filt, start_time, end_time, percent_axis)
         toe_cycle = interp_cycle_signal(t_sec, toe_filt, start_time, end_time, percent_axis)
         to_percent = ((toe_off_time - start_time) / (end_time - start_time)) * 100.0
-        st.markdown(f"### Hasil {selected_cycle}")
-        st.plotly_chart(plot_cycle_joint(hip_cycle, percent_axis, to_percent, "Hip Joint", "red", selected_cycle), use_container_width=True, key=f"hip_cycle_{idx_cycle}")
-        st.plotly_chart(plot_cycle_joint(knee_cycle, percent_axis, to_percent, "Knee Joint", "green", selected_cycle), use_container_width=True, key=f"knee_cycle_{idx_cycle}")
-        st.plotly_chart(plot_cycle_joint(ankle_cycle, percent_axis, to_percent, "Ankle Joint", "blue", selected_cycle), use_container_width=True, key=f"ankle_cycle_{idx_cycle}")
+        # Grafik putih per siklus dihilangkan sesuai revisi.
+        # Tampilan grafik yang dipertahankan adalah Gait Analysis seperti Delphi di bawah.
 
         st.markdown(f"### Detail Titik Sentuh (Kinematic Events) - {selected_cycle}")
         event_df = pd.DataFrame({
