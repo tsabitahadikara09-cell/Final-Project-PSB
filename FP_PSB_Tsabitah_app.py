@@ -1,48 +1,62 @@
+import math
 import io
+from typing import List, Tuple, Dict
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from scipy.signal import butter, filtfilt
+
+# =========================================================
+# FP PSB - GAIT PARAMETER EXTRACTION & DYNAMIC EMG
+# Streamlit single-file version
+# =========================================================
 
 st.set_page_config(
-    page_title="FP PSB - Gait Parameter & Dynamic EMG",
-    page_icon="📈",
+    page_title="FP PSB - Gait Parameter Extraction & Dynamic EMG",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# =========================================================
-# STYLE
-# =========================================================
-st.markdown("""
-<style>
-    .stApp { background: #0e1117; color: white; }
-    section[data-testid="stSidebar"] { background: #262730; }
-    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    h1, h2, h3 { color: white; }
-    .metric-card {
-        background: #173f2f;
-        border-radius: 10px;
-        padding: 12px;
-        color: #29ff8a;
+# ======================== STYLE ==========================
+st.markdown(
+    """
+    <style>
+    .stApp { background-color: #0e1117; color: white; }
+    section[data-testid="stSidebar"] { background-color: #262832; }
+    .block-container { padding-top: 2.2rem; padding-bottom: 2rem; }
+    h1, h2, h3 { color: white !important; font-weight: 800 !important; }
+    div[data-testid="stMetricValue"] { color: #14ff4b; }
+    .small-box {
+        background: #203b63;
+        padding: 14px 16px;
+        border-radius: 8px;
+        color: #6bb6ff;
+        font-size: 14px;
+        margin-top: 12px;
+        line-height: 1.6;
+    }
+    .success-box {
+        background: #205438;
+        padding: 14px 16px;
+        border-radius: 8px;
+        color: #39ff7d;
         font-weight: 700;
-        margin-bottom: 8px;
+        margin-top: 12px;
     }
-    .info-card {
-        background: #224061;
-        border-radius: 10px;
-        padding: 12px;
-        color: #5db7ff;
-        margin-bottom: 8px;
+    .param-card {
+        border: 1px solid #363a45;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        background: #151922;
     }
-</style>
-""", unsafe_allow_html=True)
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-# =========================================================
-# CONSTANTS
-# =========================================================
+# ===================== CONSTANTS =========================
 MUSCLE_SHORT = ["GMAX", "BFS", "BFL", "VM", "VL", "RF", "MG", "TA", "SOL"]
 MUSCLE_LONG = [
     "Gluteus Maximus",
@@ -53,681 +67,573 @@ MUSCLE_LONG = [
     "Rectus Femoris",
     "Medial Gastrocnemius",
     "Tibialis Anterior",
-    "Soleus",
+    "Soleus"
 ]
-COLORS = {
-    "heel": "purple",
-    "toe": "blue",
-    "hip": "red",
-    "knee": "green",
-    "ankle": "blue",
-    "threshold": "gray",
-    "on": "lime",
-    "off": "red",
-}
+MUSCLE_COLORS = ["lime"] * 9
+JOINT_COLORS = {"hip": "red", "knee": "green", "ankle": "blue"}
 
-# =========================================================
-# HELPERS
-# =========================================================
-def safe_array(x):
-    x = np.asarray(x, dtype=float)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-    return x
+# ===================== BASIC HELPERS =====================
+def parse_txt_file(uploaded_file) -> np.ndarray:
+    content = uploaded_file.read().decode("utf-8", errors="ignore").splitlines()
+    rows = []
+    for line in content:
+        parts = line.split()
+        if len(parts) >= 6:
+            try:
+                row = [float(x) for x in parts]
+                rows.append(row)
+            except ValueError:
+                continue
+    return np.array(rows, dtype=float)
 
 
-def normalize(signal):
-    sig = safe_array(signal)
-    mn, mx = np.min(sig), np.max(sig)
-    if mx - mn == 0:
-        return np.zeros_like(sig)
-    return (sig - mn) / (mx - mn)
+def infer_fs(t: np.ndarray) -> float:
+    if len(t) < 2:
+        return 100.0
+    dt = np.median(np.diff(t))
+    if dt <= 0:
+        return 100.0
+    # Jika t sudah dalam detik, fs = 1/dt. Jika t ternyata sample index, dt biasanya 1.
+    fs = 1.0 / dt
+    if fs < 5:
+        # Data Flat3 biasanya time 0-7 s untuk 7043 sampel.
+        return 1000.0
+    return float(fs)
 
 
-def lowpass_filter(signal, fs, cutoff=6.0, order=4):
-    sig = safe_array(signal)
-    if len(sig) < max(order * 3, 16):
-        return sig
-    nyq = 0.5 * fs
-    normal_cutoff = min(float(cutoff) / nyq, 0.99)
-    if normal_cutoff <= 0:
-        return sig
-    b, a = butter(order, normal_cutoff, btype="low")
-    try:
-        return filtfilt(b, a, sig)
-    except Exception:
-        return sig
+def manual_normalize(signal):
+    signal = list(np.asarray(signal, dtype=float))
+    if len(signal) == 0:
+        return []
+    max_val = max(signal)
+    min_val = min(signal)
+    if max_val == min_val:
+        return [0.0 for _ in signal]
+    return [(x - min_val) / (max_val - min_val) for x in signal]
 
 
-def load_txt(uploaded):
-    raw = uploaded.getvalue()
-    try:
-        data = np.loadtxt(io.BytesIO(raw))
-    except Exception:
-        data = np.genfromtxt(io.BytesIO(raw), delimiter=",")
-    data = np.asarray(data, dtype=float)
-    if data.ndim == 1:
-        data = data.reshape(-1, 1)
-    return data
+def manual_lowpass(signal, fs=100.0, cutoff=6.0):
+    signal = list(np.asarray(signal, dtype=float))
+    if len(signal) == 0:
+        return []
+    if cutoff <= 0:
+        return signal
+    RC = 1.0 / (2.0 * math.pi * cutoff)
+    dt = 1.0 / fs
+    alpha = dt / (RC + dt)
+    filtered_fwd = [0.0] * len(signal)
+    filtered_fwd[0] = signal[0]
+    for i in range(1, len(signal)):
+        filtered_fwd[i] = filtered_fwd[i - 1] + alpha * (signal[i] - filtered_fwd[i - 1])
+    filtered_bwd = [0.0] * len(signal)
+    filtered_bwd[-1] = filtered_fwd[-1]
+    for i in range(len(signal) - 2, -1, -1):
+        filtered_bwd[i] = filtered_bwd[i + 1] + alpha * (filtered_fwd[i] - filtered_bwd[i + 1])
+    return filtered_bwd
 
 
-def build_signals(data, fs_manual=0.0, cutoff_lpf=6.0):
-    if data.shape[1] < 15:
-        raise ValueError("Format minimal 15 kolom: time, heel, toe, hip, knee, ankle, EMG1-EMG9")
-
-    time = safe_array(data[:, 0])
-    if np.allclose(np.diff(time[: min(len(time), 10)]), 0) or len(np.unique(time)) < 5:
-        fs = 1000.0 if fs_manual <= 0 else fs_manual
-        time = np.arange(len(data)) / fs
-    else:
-        dt = np.median(np.diff(time))
-        if dt <= 0:
-            fs = 1000.0 if fs_manual <= 0 else fs_manual
-            time = np.arange(len(data)) / fs
-        else:
-            fs = 1.0 / dt if fs_manual <= 0 else fs_manual
-            if np.max(time) > 1000 and fs_manual <= 0:
-                # Jika time masih sample besar, ubah menjadi detik.
-                fs = 1000.0
-                time = np.arange(len(data)) / fs
-
-    signals = {
-        "time": time,
-        "fs": float(fs),
-        "n": np.arange(len(data)),
-        "heel_raw": safe_array(data[:, 1]),
-        "toe_raw": safe_array(data[:, 2]),
-        "hip_raw": safe_array(data[:, 3]),
-        "knee_raw": safe_array(data[:, 4]),
-        "ankle_raw": safe_array(data[:, 5]),
-        "emg_raw": safe_array(data[:, 6:15]),
-    }
-    signals["heel_filt"] = lowpass_filter(signals["heel_raw"], fs, cutoff=cutoff_lpf)
-    signals["toe_filt"] = lowpass_filter(signals["toe_raw"], fs, cutoff=cutoff_lpf)
-    signals["hip_filt"] = lowpass_filter(signals["hip_raw"], fs, cutoff=cutoff_lpf)
-    signals["knee_filt"] = lowpass_filter(signals["knee_raw"], fs, cutoff=cutoff_lpf)
-    signals["ankle_filt"] = lowpass_filter(signals["ankle_raw"], fs, cutoff=cutoff_lpf)
-    signals["cutoff_lpf"] = float(cutoff_lpf)
-    return signals
+def moving_average(signal: np.ndarray, window: int = 5) -> np.ndarray:
+    if window <= 1:
+        return signal
+    kernel = np.ones(window) / window
+    return np.convolve(signal, kernel, mode="same")
 
 
-def crossing_times(t, signal, threshold=0.05):
-    sig = safe_array(signal)
-    rise, fall = [], []
-    for i in range(1, len(sig)):
-        if sig[i - 1] < threshold <= sig[i]:
-            rise.append(t[i])
-        if sig[i - 1] >= threshold > sig[i]:
-            fall.append(t[i])
-    return np.asarray(rise), np.asarray(fall)
+def extract_phase_crossings(t, signal, threshold=0.05):
+    active = [x >= threshold for x in signal]
+    on_times, off_times = [], []
+    for i in range(1, len(active)):
+        if active[i] and not active[i - 1]:
+            on_times.append(float(t[i]))
+        elif (not active[i]) and active[i - 1]:
+            off_times.append(float(t[i]))
+    return on_times, off_times
 
 
-def all_crossing_times(t, signal, threshold=0.05):
-    rise, fall = crossing_times(t, signal, threshold)
-    return np.sort(np.concatenate([rise, fall]))
-
-
-def get_cycles(t, heel_norm, threshold=0.05, max_cycles=8):
-    heel_on, _ = crossing_times(t, heel_norm, threshold)
-    if len(heel_on) >= 2:
-        cycles = [(heel_on[i], heel_on[i + 1]) for i in range(len(heel_on) - 1)]
-    else:
+def extract_gait_parameters(t, heel_filt, toe_filt=None, threshold=0.05):
+    heel_on, heel_off = extract_phase_crossings(t, heel_filt, threshold)
+    if len(heel_on) > 1:
         cycles = []
-    if not cycles and len(t) > 2:
-        dur = (t[-1] - t[0]) / 5
-        cycles = [(t[0] + i * dur, t[0] + (i + 1) * dur) for i in range(5)]
-    return cycles[:max_cycles]
+        for i in range(len(heel_on) - 1):
+            s = heel_on[i]
+            e = heel_on[i + 1]
+            if e <= s:
+                continue
+            if toe_filt is not None:
+                toe_on, _ = extract_phase_crossings(t, toe_filt, threshold)
+                toe_between = [x for x in toe_on if s < x < e]
+                toe_off = toe_between[0] if toe_between else s + 0.63 * (e - s)
+            else:
+                toe_off = s + 0.63 * (e - s)
+            cycles.append((s, e, toe_off))
+        if cycles:
+            cycle_times = [e - s for s, e, _ in cycles]
+            mean_cycle = sum(cycle_times) / len(cycle_times)
+            cadence = 60.0 / mean_cycle if mean_cycle > 0 else 0.0
+            return mean_cycle, cadence, len(cycles), heel_on, cycles
+    return 0.0, 0.0, 0, [], []
 
 
-def detect_segments_by_cycle(t, signal, threshold, cycles):
-    signal = safe_array(signal)
-    segments = []
-    for c_start, c_end in cycles:
-        idx = np.where((t >= c_start) & (t <= c_end))[0]
-        if len(idx) < 3:
-            continue
-        lt, ls = t[idx], signal[idx]
-        active = ls >= threshold
-        start = None
-        for i in range(1, len(active)):
-            if active[i] and not active[i - 1]:
-                start = lt[i]
-            elif (not active[i]) and active[i - 1]:
-                if start is not None:
-                    end = lt[i]
-                    gap = max(0.01, 0.018 * (c_end - c_start))
-                    if end - start > 2 * gap:
-                        segments.append((start + gap, end - gap))
-                    start = None
-        if start is not None:
-            end = lt[-1]
-            gap = max(0.01, 0.018 * (c_end - c_start))
-            if end - start > 2 * gap:
-                segments.append((start + gap, end - gap))
-    return segments
+def interp_cycle_signal(t, signal, start_time, end_time, percent_axis):
+    t = np.asarray(t, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+    mask = (t >= start_time) & (t <= end_time)
+    if np.sum(mask) < 2 or end_time <= start_time:
+        return np.zeros_like(percent_axis, dtype=float)
+    t_cycle = t[mask]
+    s_cycle = signal[mask]
+    cycle_percent = (t_cycle - start_time) / (end_time - start_time) * 100.0
+    return np.interp(percent_axis, cycle_percent, s_cycle)
 
 
-def emg_processing(emg_raw, fs, cutoff=6.0):
-    rect = np.abs(emg_raw)
-    env_raw = np.zeros_like(rect)
-    env_norm = np.zeros_like(rect)
-    for i in range(rect.shape[1]):
-        env_raw[:, i] = lowpass_filter(rect[:, i], fs, cutoff=cutoff)
-        env_norm[:, i] = normalize(env_raw[:, i])
-    return rect, env_raw, env_norm
+def manual_stft(signal, fs, nperseg=256, overlap=128):
+    signal = np.asarray(signal, dtype=float)
+    step = max(1, nperseg - overlap)
+    if len(signal) < nperseg:
+        padded = np.zeros(nperseg)
+        padded[:len(signal)] = signal
+        signal = padded
+    window = np.hanning(nperseg)
+    freqs = np.fft.rfftfreq(nperseg, d=1.0 / fs)
+    times = []
+    mat = []
+    for start in range(0, len(signal) - nperseg + 1, step):
+        segment = signal[start:start + nperseg]
+        spectrum = np.fft.rfft(segment * window)
+        mag = np.abs(spectrum)
+        mat.append(mag)
+        times.append((start + nperseg / 2) / fs)
+    if not mat:
+        mat = [np.zeros_like(freqs)]
+        times = [0]
+    return freqs, np.array(times), np.array(mat).T
 
-
-def base_layout(fig, title, x_title="", y_title="", height=320):
+# ===================== PLOT HELPERS ======================
+def dark_layout(fig, title, x_title="", y_title="", height=360):
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=20)),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(color="white", size=18)),
         template="plotly_dark",
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
         height=height,
-        margin=dict(l=40, r=30, t=60, b=45),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        legend=dict(orientation="h", y=1.12, x=0.0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=50, r=25, t=70, b=50)
     )
-    fig.update_xaxes(title=x_title, showgrid=True, gridcolor="rgba(255,255,255,0.15)")
-    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="rgba(255,255,255,0.15)")
+    fig.update_xaxes(gridcolor="rgba(180,180,180,0.25)")
+    fig.update_yaxes(gridcolor="rgba(180,180,180,0.25)")
     return fig
 
 
-
-
-def base_layout_light(fig, title, x_title="", y_title="", height=360):
+def white_layout(fig, title, x_title="", y_title="", height=420):
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=20, color="black")),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(color="black", size=20)),
         template="plotly_white",
         paper_bgcolor="white",
         plot_bgcolor="white",
         height=height,
-        margin=dict(l=55, r=35, t=65, b=55),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(color="black")),
-        font=dict(color="black"),
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        legend=dict(bgcolor="rgba(255,255,255,0.85)", bordercolor="lightgray", borderwidth=1),
+        margin=dict(l=55, r=25, t=65, b=50)
     )
-    fig.update_xaxes(title=x_title, showgrid=True, gridcolor="rgba(0,0,0,0.20)", zeroline=False, color="black")
-    fig.update_yaxes(title=y_title, showgrid=True, gridcolor="rgba(0,0,0,0.20)", zeroline=False, color="black")
+    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
+    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
     return fig
 
-def add_vline_shape(fig, x, color="lime", dash="dash", width=1.4, name=None):
-    fig.add_vline(x=float(x), line_color=color, line_dash=dash, line_width=width)
-    if name:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color=color, dash=dash, width=width), name=name))
 
-def plot_fsr_expected(t, heel, toe, title):
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=t, y=heel, mode="lines", name="Heel / FSR Biru" if "INPUT" in title else "Heel Filtering", line=dict(color="blue", width=2)))
-    fig.add_trace(go.Scatter(x=t, y=toe, mode="lines", name="Toe / FSR Merah" if "INPUT" in title else "Toe Filtering", line=dict(color="red", width=2)))
-    return base_layout_light(fig, title, "Waktu (s)", "Amplitude", 430)
-
-def clean_combined_onoff(t, env_norm, cycles, threshold):
-    mean_env = np.mean(env_norm, axis=1)
-    pairs=[]
-    for a,b in cycles:
-        idx=np.where((t>=a)&(t<=b))[0]
-        if len(idx)<3: continue
-        local_t=t[idx]; local=mean_env[idx]
-        active=local>=threshold
-        segs=[]; start=None
-        for i in range(1,len(active)):
-            if active[i] and not active[i-1]: start=local_t[i]
-            elif (not active[i]) and active[i-1] and start is not None:
-                segs.append((start,local_t[i])); start=None
-        if start is not None: segs.append((start,local_t[-1]))
-        if segs:
-            seg=max(segs, key=lambda z:z[1]-z[0])
-            if seg[1]>seg[0]: pairs.append(seg)
-    if not pairs:
-        on, off = crossing_times(t, mean_env, threshold)
-        pairs=list(zip(on[:min(len(on),len(off))], off[:min(len(on),len(off))]))
-    return pairs
-
-def plot_combined_env_clean(t, env_norm, labels, cycles, threshold, cutoff_lpf=6.0):
-    fig=go.Figure()
-    n_ch=env_norm.shape[1]
-    for j in range(n_ch):
-        offset=j*1.2
-        fig.add_trace(go.Scatter(x=t, y=env_norm[:,j]+offset, mode="lines", name=labels[j], line=dict(color="green", width=2)))
-    for k,(a,b) in enumerate(clean_combined_onoff(t, env_norm, cycles, threshold)):
-        add_vline_shape(fig, a, "lime", "dash", 1.6, "ON" if k==0 else None)
-        add_vline_shape(fig, b, "red", "dash", 1.6, "OFF" if k==0 else None)
-    fig.update_yaxes(tickmode="array", tickvals=[i*1.2 for i in range(n_ch)], ticktext=labels)
-    return base_layout_light(fig, f"Enveloped Filter (Cutoff: {cutoff_lpf:.1f} Hz) - Fase ON(Hijau) & OFF(Merah)", "Waktu (s)", "", 620)
-
-def plot_activation_expected(t, env_norm, labels_long, threshold, cycles):
-    fig=go.Figure()
-    labels=list(labels_long)
-    y_positions=list(range(len(labels)))
-    for j, lab in enumerate(labels):
-        segs=detect_segments_by_cycle(t, env_norm[:,j], threshold, cycles)
-        for k,(a,b) in enumerate(segs):
-            fig.add_trace(go.Scatter(x=[a,b], y=[j,j], mode="lines", line=dict(color="#1f77b4", width=16), name=lab if k==0 else None, showlegend=False))
-    fig.update_yaxes(tickmode="array", tickvals=y_positions, ticktext=labels, autorange="reversed")
-    return base_layout_light(fig, "Muscle activation each cycle", "Waktu (s)", "", 620)
-
-def plot_cycle_joint_expected(percent, mean_curve, cycles_curves, title, color="red", markers=None):
-    fig=go.Figure()
-    # per-cycle thin curves
-    for i,c in enumerate(cycles_curves[:6]):
-        fig.add_trace(go.Scatter(x=percent, y=c, mode="lines", name=f"Cycle {i+1}", line=dict(color="rgba(120,120,120,0.35)", width=1), showlegend=False))
-    fig.add_trace(go.Scatter(x=percent, y=mean_curve, mode="lines", name=title, line=dict(color=color, width=2)))
-    if markers:
-        for name,xpos,mc in markers:
-            y=float(np.interp(xpos, percent, mean_curve))
-            fig.add_trace(go.Scatter(x=[xpos], y=[y], mode="markers+text", name=name, text=[name], textposition="middle right", marker=dict(symbol="square", size=9, color=mc, line=dict(color="black", width=1))))
-    return base_layout_light(fig, title, "gait cycle [%]", "Deg", 285)
-
-def gait_cycle_curves(t, sig, cycles):
-    percent=np.linspace(0,100,101); curves=[]
-    for a,b in cycles:
-        idx=(t>=a)&(t<=b)
-        if np.sum(idx)<2: continue
-        x=(t[idx]-a)/(b-a)*100
-        curves.append(np.interp(percent,x,sig[idx]))
-    if not curves: curves=[np.zeros_like(percent)]
-    return percent, curves, np.mean(np.vstack(curves),axis=0)
-
-def add_vline(fig, x, color="lime", dash="dash", width=1.2, name=None):
-    fig.add_vline(x=float(x), line_color=color, line_dash=dash, line_width=width)
-    if name:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color=color, dash=dash, width=width), name=name))
-
-
-def plot_simple(x, ys, names, colors, title, x_title, y_title, height=320):
+def plot_multi_input_output(x, signals: Dict[str, np.ndarray], title, x_title, y_title, colors, height=340, dark=True):
     fig = go.Figure()
-    for y, name, color in zip(ys, names, colors):
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=name, line=dict(color=color, width=1.5)))
-    return base_layout(fig, title, x_title, y_title, height)
+    for name, sig in signals.items():
+        fig.add_trace(go.Scatter(x=x, y=sig, mode="lines", name=name, line=dict(color=colors.get(name, None), width=1.8)))
+    return dark_layout(fig, title, x_title, y_title, height) if dark else white_layout(fig, title, x_title, y_title, height)
 
 
-def plot_phase_single(t, filtered, name, color, threshold=0.05):
-    norm = normalize(filtered)
-    on, off = crossing_times(t, norm, threshold)
+def make_heel_toe_plot(t, heel, toe, title, height=360):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=t, y=norm, mode="lines", name=f"{name} Normalized", line=dict(color=color, width=2)))
-    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t) * threshold, mode="lines", name="Threshold (0.05)", line=dict(color="gray", width=1)))
-    for i, x in enumerate(on):
-        add_vline(fig, x, "lime", "dash", 1.2, f"{name} ON / Naik" if i == 0 else None)
-    for i, x in enumerate(off):
-        add_vline(fig, x, "red", "dash", 1.2, f"{name} OFF / Turun" if i == 0 else None)
-    fig.update_yaxes(range=[-0.08, 1.08])
-    return base_layout(fig, f"{name.upper()} PHASE DETECTION 5%", "Waktu (s)", "Amplitudo", 330)
+    fig.add_trace(go.Scatter(x=t, y=heel, mode="lines", name="Heel / FSR Biru", line=dict(color="blue", width=2)))
+    fig.add_trace(go.Scatter(x=t, y=toe, mode="lines", name="Toe / FSR Merah", line=dict(color="red", width=2)))
+    return dark_layout(fig, title, "Waktu (s)", "Amplitude", height)
 
 
-def plot_stacked(t, matrix, labels, title, x_title="Waktu (s)", height=520, line_color="green", onoff=False, cycles=None, threshold=0.05):
+def make_phase_detection_plot(t, signal, on_times, off_times, title, line_name, color):
     fig = go.Figure()
-    n_ch = matrix.shape[1]
-    for j in range(n_ch):
-        y = normalize(matrix[:, j]) if np.nanmax(np.abs(matrix[:, j])) > 2 else matrix[:, j]
-        offset = j * 1.2
-        fig.add_trace(go.Scatter(x=t, y=y + offset, mode="lines", name=labels[j], line=dict(color=line_color, width=1.5)))
-        if onoff and cycles is not None:
-            segments = detect_segments_by_cycle(t, normalize(matrix[:, j]), threshold, cycles)
-            for k, (a, b) in enumerate(segments):
-                add_vline(fig, a, "lime", "dash", 1.0, "ON" if (j == 0 and k == 0) else None)
-                add_vline(fig, b, "red", "dash", 1.0, "OFF" if (j == 0 and k == 0) else None)
-    fig.update_yaxes(tickmode="array", tickvals=[i * 1.2 for i in range(n_ch)], ticktext=labels)
-    return base_layout(fig, title, x_title, "Muscle", height)
+    fig.add_trace(go.Scatter(x=t, y=signal, mode="lines", name=line_name, line=dict(color=color, width=2.4)))
+    fig.add_trace(go.Scatter(x=t, y=[0.05] * len(t), mode="lines", name="Threshold 0.05", line=dict(color="gray", width=1, dash="dash")))
+    for x in on_times:
+        fig.add_vline(x=x, line_color="lime", line_width=1.4, line_dash="dash")
+    for x in off_times:
+        fig.add_vline(x=x, line_color="red", line_width=1.4, line_dash="dash")
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="ON / Naik", line=dict(color="lime", width=2, dash="dash")))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="OFF / Turun", line=dict(color="red", width=2, dash="dash")))
+    fig = dark_layout(fig, title, "Waktu (s)", "Amplitude", 380)
+    fig.update_yaxes(range=[-0.05, 1.05])
+    return fig
 
 
-def plot_activation_stacked(t, env_norm, labels, threshold, cycles):
+def add_on_off_lines_for_channel(fig, on_times, off_times, y0, y1):
+    for x in on_times:
+        fig.add_shape(type="line", x0=x, x1=x, y0=y0, y1=y1, line=dict(color="lime", width=1.1, dash="dash"))
+    for x in off_times:
+        fig.add_shape(type="line", x0=x, x1=x, y0=y0, y1=y1, line=dict(color="red", width=1.1, dash="dash"))
+
+
+def plot_emg_stacked(t, data, title, labels, mode="raw", threshold=0.05, add_onoff=False):
     fig = go.Figure()
-    for j, lab in enumerate(labels):
-        offset = j * 1.2
-        segments = detect_segments_by_cycle(t, env_norm[:, j], threshold, cycles)
-        for k, (a, b) in enumerate(segments):
+    for i, label in enumerate(labels):
+        sig = np.asarray(data[:, i], dtype=float)
+        if mode in ["env", "rect", "activation"]:
+            sig_plot = sig + i * 1.2
+        else:
+            sig_plot = manual_normalize(sig)
+            sig_plot = np.asarray(sig_plot) * 0.85 + i * 1.2
+        fig.add_trace(go.Scatter(x=t, y=sig_plot, mode="lines", name=label, line=dict(color="lime", width=1.4)))
+        if add_onoff:
+            on, off = extract_phase_crossings(t, sig, threshold)
+            add_on_off_lines_for_channel(fig, on, off, i * 1.2, i * 1.2 + 1.0)
+    if add_onoff:
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="ON", line=dict(color="lime", dash="dash")))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="OFF", line=dict(color="red", dash="dash")))
+    fig = dark_layout(fig, title, "Waktu (s)", "Muscle", 520)
+    fig.update_yaxes(tickvals=[i * 1.2 for i in range(len(labels))], ticktext=labels)
+    return fig
+
+
+def activation_segments(t, signal, threshold=0.05, cycle_lines=None):
+    active = np.asarray(signal) >= threshold
+    segs = []
+    start = None
+    for i in range(1, len(active)):
+        if active[i] and not active[i - 1]:
+            start = float(t[i])
+        elif (not active[i]) and active[i - 1]:
+            if start is not None:
+                end = float(t[i])
+                if end > start:
+                    segs.append((start, end))
+            start = None
+    if start is not None:
+        segs.append((start, float(t[-1])))
+    # Beri gap agar terlihat terputus
+    out = []
+    for s, e in segs:
+        gap = min(0.03, max((e - s) * 0.2, 0.0))
+        if e - s > 2 * gap:
+            out.append((s + gap, e - gap))
+    return out
+
+
+def plot_activation_bars(t, env, labels, threshold=0.05):
+    fig = go.Figure()
+    for i, label in enumerate(labels):
+        segs = activation_segments(t, env[:, i], threshold)
+        for s, e in segs:
             fig.add_trace(go.Scatter(
-                x=[a, b], y=[offset, offset], mode="lines",
-                name=lab if k == 0 else None,
-                showlegend=(k == 0),
-                line=dict(color="lime", width=8)
+                x=[s, e], y=[i, i], mode="lines", name=label,
+                line=dict(color="lime", width=8), showlegend=False
             ))
-    fig.update_yaxes(tickmode="array", tickvals=[i * 1.2 for i in range(len(labels))], ticktext=labels)
-    return base_layout(fig, "MUSCLE ACTIVATION EACH CYCLE", "Waktu (s)", "Muscle", 430)
+    # dummy legend
+    for label in labels:
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name=label, line=dict(color="lime", width=8)))
+    fig = dark_layout(fig, "MUSCLE ACTIVATION EACH CYCLE", "Waktu (s)", "Muscle", 480)
+    fig.update_yaxes(tickvals=list(range(len(labels))), ticktext=labels)
+    return fig
 
 
-def manual_stft(signal, fs, nperseg=256, overlap=128):
-    sig = safe_array(signal)
-    if len(sig) < nperseg:
-        padded = np.zeros(nperseg)
-        padded[: len(sig)] = sig
-        sig = padded
-    step = max(1, nperseg - overlap)
-    window = np.hanning(nperseg)
-    freqs = np.fft.rfftfreq(nperseg, d=1 / fs)
-    times, mats = [], []
-    for start in range(0, len(sig) - nperseg + 1, step):
-        seg = sig[start:start + nperseg] * window
-        spec = np.abs(np.fft.rfft(seg))
-        mats.append(spec)
-        times.append((start + nperseg / 2) / fs)
-    if not mats:
-        mats = [np.zeros(len(freqs))]
-        times = [0]
-    return freqs, np.asarray(times), np.asarray(mats).T
+def plot_single_emg(t, raw, rect, env, threshold, label):
+    figs = []
+    figs.append(dark_layout(go.Figure([go.Scatter(x=t, y=raw, mode="lines", name=f"{label} Raw", line=dict(color="cyan"))]), f"RAW EMG - {label}", "Waktu (s)", "EMG", 300))
+    figs.append(dark_layout(go.Figure([go.Scatter(x=t, y=rect, mode="lines", name=f"{label} Rectification", line=dict(color="orange"))]), f"RECTIFICATION - {label}", "Waktu (s)", "Rectified EMG", 300))
+    fig_env = go.Figure()
+    fig_env.add_trace(go.Scatter(x=t, y=env, mode="lines", name=f"{label} Envelope", line=dict(color="lime", width=2)))
+    fig_env.add_trace(go.Scatter(x=t, y=[threshold]*len(t), mode="lines", name="Threshold", line=dict(color="gray", dash="dash")))
+    on, off = extract_phase_crossings(t, env, threshold)
+    for x in on:
+        fig_env.add_vline(x=x, line_color="lime", line_dash="dash", line_width=1.3)
+    for x in off:
+        fig_env.add_vline(x=x, line_color="red", line_dash="dash", line_width=1.3)
+    fig_env.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="ON", line=dict(color="lime", dash="dash")))
+    fig_env.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="OFF", line=dict(color="red", dash="dash")))
+    figs.append(dark_layout(fig_env, f"ENVELOPED FILTER - {label} (ON Hijau & OFF Merah)", "Waktu (s)", "Envelope", 360))
+    fig_act = go.Figure()
+    segs = activation_segments(t, env, threshold)
+    for s, e in segs:
+        fig_act.add_trace(go.Scatter(x=[s, e], y=[0, 0], mode="lines", line=dict(color="lime", width=10), showlegend=False))
+    fig_act = dark_layout(fig_act, f"MUSCLE ACTIVATION - {label}", "Waktu (s)", "Activation", 260)
+    fig_act.update_yaxes(range=[-0.5, 0.5], tickvals=[0], ticktext=[label])
+    figs.append(fig_act)
+    return figs
 
 
-def plot_stft(signal, fs, title="STFT Spectrogram"):
-    f, tt, p = manual_stft(signal, fs)
-    fig = go.Figure(data=go.Heatmap(x=tt, y=f, z=p, colorscale="Viridis"))
-    fig.update_yaxes(range=[0, min(11, np.max(f))])
-    return base_layout(fig, title, "Time (s)", "Frequency (Hz)", 560)
+def plot_cycle_joint(signal, percent_axis, to_percent, title, color, selected_cycle):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=percent_axis, y=signal, mode="lines", name=f"{title} ({selected_cycle})", line=dict(color=color, width=4)))
+    fig.add_trace(go.Scatter(x=[0], y=[signal[0]], mode="markers", name="IC (0%)", marker=dict(color="green", size=14, symbol="square")))
+    y_to = np.interp(to_percent, percent_axis, signal)
+    fig.add_trace(go.Scatter(x=[to_percent], y=[y_to], mode="markers", name=f"TO ({to_percent:.2f}%)", marker=dict(color="red", size=14, symbol="square")))
+    return white_layout(fig, f"{title} - {selected_cycle}", "Gait Cycle (%)", "Degree (°)", 430)
 
 
-def temporal_table(t, heel_norm, toe_norm, threshold=0.05):
-    heel_on, _ = crossing_times(t, heel_norm, threshold)
-    toe_on, _ = crossing_times(t, toe_norm, threshold)
-    rows = []
-    for i in range(min(len(heel_on) - 1, 8)):
-        start = heel_on[i]
-        end = heel_on[i + 1]
-        toe_between = toe_on[(toe_on > start) & (toe_on < end)]
-        toe_off = toe_between[0] if len(toe_between) else start + 0.63 * (end - start)
-        cycle = end - start
-        stance = toe_off - start
-        swing = end - toe_off
-        rows.append({
-            "cycle": i + 1,
-            "start_time": round(start, 3),
-            "toe_off_time": round(toe_off, 3),
-            "end_time": round(end, 3),
-            "gait_cycle_time": round(cycle, 3),
-            "stance_time": round(stance, 3),
-            "swing_time": round(swing, 3),
-            "stance_percent": round(100 * stance / cycle, 2) if cycle > 0 else 0,
-            "swing_percent": round(100 * swing / cycle, 2) if cycle > 0 else 0,
-        })
-    return pd.DataFrame(rows)
+def plot_gait_analysis_delphi(percent_axis, hip_mean, knee_mean, ankle_mean, heel_mean, toe_mean, to_percent):
+    figs = []
+    specs = [("HIP JOINT", hip_mean, "red"), ("KNEE JOINT", knee_mean, "green"), ("ANKLE JOINT", ankle_mean, "blue")]
+    for title, sig, color in specs:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=percent_axis, y=sig, mode="lines", name=title, line=dict(color=color, width=2)))
+        for name, x, c in [("IC", 0, "cyan"), ("FF", 12, "yellow"), ("HO", 33, "cyan"), ("TO", to_percent, "cyan")]:
+            fig.add_vline(x=x, line_dash="dot", line_color=c, line_width=1.3)
+            fig.add_trace(go.Scatter(x=[x], y=[np.interp(x, percent_axis, sig)], mode="markers", name=name, marker=dict(size=8)))
+        figs.append(dark_layout(fig, title, "gait cycle [%]", "Deg", 250))
+    figp = go.Figure()
+    figp.add_trace(go.Scatter(x=percent_axis, y=heel_mean*2.2, mode="lines", name="HEEL", line=dict(color="red", dash="dash")))
+    figp.add_trace(go.Scatter(x=percent_axis, y=toe_mean*2.2, mode="lines", name="TOE", line=dict(color="blue", dash="dot")))
+    figp.add_trace(go.Scatter(x=percent_axis, y=np.ones_like(percent_axis)*0.2, mode="lines", name="THD", line=dict(color="gray")))
+    figs.append(dark_layout(figp, "GAIT PHASE", "gait cycle [%]", "Volt", 250))
+    return figs
 
+# ===================== SIDEBAR ===========================
+st.sidebar.markdown("## Panel Kontrol")
+uploaded = st.sidebar.file_uploader("LOAD DATA (TXT)", type=["txt", "TXT"])
+cutoff_lpf = st.sidebar.slider("Cutoff Frequency LPF (Hz)", 1.0, 20.0, 6.0, 0.5)
+emg_threshold = st.sidebar.slider("Threshold EMG Activation", 0.01, 0.90, 0.05, 0.01)
 
-def joint_table(sig):
-    sig = safe_array(sig)
-    mx, mn = float(np.max(sig)), float(np.min(sig))
-    rom = mx - mn
-    return pd.DataFrame({
-        "Parameter": ["Angle @IC (deg)", "Angle @FF (deg)", "Angle @HO (deg)", "Angle @TO (deg)", "Max (deg)", "Max (%cycle)", "Min (deg)", "Min (%cycle)", "ROM (deg)"],
-        "Nilai (Mean ± SD)": ["27.04 ± 3.09", "30.46 ± 1.69", "10.37 ± 3.60", "-7.75 ± 1.80", f"{mx:.2f} ± 1.26", "49.98 ± 41.26", f"{mn:.2f} ± 1.32", "57.60 ± 1.73", f"{rom:.2f} ± 0.88"],
-    })
+st.sidebar.markdown(
+    """<div class="small-box">Format minimal 15 kolom:<br>time, heel, toe, hip, knee, ankle, EMG1-EMG9.</div>""",
+    unsafe_allow_html=True
+)
 
-
-def gait_cycle_mean(t, sig, cycles):
-    percent = np.linspace(0, 100, 101)
-    curves = []
-    for a, b in cycles:
-        idx = (t >= a) & (t <= b)
-        if np.sum(idx) < 2:
-            continue
-        local_t = t[idx]
-        local_s = sig[idx]
-        x = (local_t - a) / (b - a) * 100
-        curves.append(np.interp(percent, x, local_s))
-    if not curves:
-        return percent, np.zeros_like(percent)
-    return percent, np.mean(np.vstack(curves), axis=0)
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-st.sidebar.header("Input Data")
-uploaded = st.sidebar.file_uploader("Upload file TXT", type=["txt", "TXT", "csv"])
-cutoff_lpf = st.sidebar.number_input("Frekuensi cut-off filter LPF (Hz)", min_value=0.1, value=6.0, step=0.5, format="%.1f")
-with st.sidebar.expander("Pengaturan Fs / sampling", expanded=False):
-    fs_manual = st.number_input("Fs manual (opsional, 0 = otomatis)", min_value=0.0, value=0.0, step=100.0, format="%.2f")
-emg_threshold_percent = st.sidebar.slider("Threshold aktivasi EMG (%)", 5.0, 90.0, 5.0, 1.0)
-emg_threshold = emg_threshold_percent / 100.0
-st.sidebar.markdown('<div class="info-card">Format minimal 15 kolom: time, heel, toe, hip, knee, ankle, EMG1-EMG9.</div>', unsafe_allow_html=True)
-
-st.title("FP PSB - Gait Parameter Extraction & Dynamic EMG")
-st.caption("Versi Streamlit satu file: GAIT PARAMETERS, DYNAMIC EMG, EMG PREPROCESSING, GAIT ANALYSIS, PARAMETER, dan STFT.")
+st.title("Gait Parameter Extraction & STFT Analysis")
 
 if uploaded is None:
-    st.info("Upload file TXT terlebih dahulu di sidebar.")
+    st.info("Upload file TXT terlebih dahulu.")
     st.stop()
 
-try:
-    data = load_txt(uploaded)
-    sig = build_signals(data, fs_manual, cutoff_lpf)
-except Exception as e:
-    st.error(f"Data gagal dibaca: {e}")
+# ===================== PROCESS DATA ======================
+data = parse_txt_file(uploaded)
+if data.size == 0 or data.shape[1] < 15:
+    st.error("Format data tidak sesuai. Minimal 15 kolom: time, heel, toe, hip, knee, ankle, EMG1-EMG9.")
     st.stop()
 
-t = sig["time"]
-fs = sig["fs"]
-n = sig["n"]
-heel_norm = normalize(sig["heel_filt"])
-toe_norm = normalize(sig["toe_filt"])
-heel_on, heel_off = crossing_times(t, heel_norm, 0.05)
-toe_on, toe_off = crossing_times(t, toe_norm, 0.05)
-cycles = get_cycles(t, heel_norm, 0.05, max_cycles=9)
-emg_rect, emg_env_raw, emg_env_norm = emg_processing(sig["emg_raw"], fs, cutoff=cutoff_lpf)
+# column map
+t = data[:, 0]
+# Jika t terlihat seperti sample index, ubah ke detik dengan fs 1000
+if len(t) > 2 and np.median(np.diff(t)) >= 0.5:
+    fs = 1000.0
+    t_sec = np.arange(len(t)) / fs
+else:
+    t_sec = t
+    fs = infer_fs(t_sec)
 
-temp_df = temporal_table(t, heel_norm, toe_norm, 0.05)
-cycle_mean = float(temp_df["gait_cycle_time"].mean()) if not temp_df.empty else 0.0
-cadence = 60 / cycle_mean if cycle_mean > 0 else 0.0
-st.sidebar.markdown(f'<div class="metric-card">Jumlah Data: {len(data)}</div>', unsafe_allow_html=True)
-st.sidebar.write(f"**Cut-off LPF:** {cutoff_lpf:.1f} Hz")
-st.sidebar.write(f"**Fs data:** {fs:.3f} Hz")
-st.sidebar.write(f"**Gait Cycle rata-rata:** {cycle_mean:.3f} s")
-st.sidebar.write(f"**Cadence:** {cadence:.2f} step/min")
+n = np.arange(len(t_sec))
+heel_raw = data[:, 1]
+toe_raw = data[:, 2]
+hip_raw = data[:, 3]
+knee_raw = data[:, 4]
+ankle_raw = data[:, 5]
+emg_raw = data[:, 6:15]
 
-# Signal dictionary for STFT and other selectors
-signal_dict = {
-    "heel": sig["heel_filt"],
-    "toe": sig["toe_filt"],
-    "hip": sig["hip_filt"],
-    "knee": sig["knee_filt"],
-    "ankle": sig["ankle_filt"],
-}
-for i, m in enumerate(MUSCLE_SHORT):
-    signal_dict[m] = sig["emg_raw"][:, i]
+heel_norm = np.array(manual_normalize(heel_raw))
+toe_norm = np.array(manual_normalize(toe_raw))
+heel_filt = np.array(manual_lowpass(heel_norm, fs=fs, cutoff=cutoff_lpf))
+toe_filt = np.array(manual_lowpass(toe_norm, fs=fs, cutoff=cutoff_lpf))
 
-# =========================================================
-# TABS
-# =========================================================
-tabs = st.tabs(["GAIT PARAMETERS", "DYNAMIC EMG", "EMG PREPROCESSING", "GAIT ANALYSIS", "PARAMETER", "STFT Analysis"])
+hip_filt = np.array(manual_lowpass(hip_raw, fs=fs, cutoff=cutoff_lpf))
+knee_filt = np.array(manual_lowpass(knee_raw, fs=fs, cutoff=cutoff_lpf))
+ankle_filt = np.array(manual_lowpass(ankle_raw, fs=fs, cutoff=cutoff_lpf))
 
-# =========================================================
-# TAB 1: GAIT PARAMETERS
-# =========================================================
-with tabs[0]:
-    sub = st.tabs(["Gabungan", "Heel", "Toe", "Joint Angle"])
+heel_on, heel_off = extract_phase_crossings(t_sec, heel_filt, 0.05)
+toe_on, toe_off = extract_phase_crossings(t_sec, toe_filt, 0.05)
+mean_cycle, cadence, jumlah_cycle, heel_crossings, cycles = extract_gait_parameters(t_sec, heel_filt, toe_filt, 0.05)
 
-    with sub[0]:
-        st.subheader("GAIT PARAMETERS - Gabungan")
-        # Tampilan gabungan dibuat seperti contoh dosen: hanya Heel/Toe FSR pada domain waktu.
-        st.plotly_chart(
-            plot_fsr_expected(t, sig["heel_raw"], sig["toe_raw"], "INPUT"),
-            use_container_width=True,
-            key="gait_fsr_expected_input"
-        )
+emg_rect = np.abs(emg_raw)
+emg_env = np.zeros_like(emg_rect, dtype=float)
+for i in range(emg_rect.shape[1]):
+    env = manual_lowpass(emg_rect[:, i], fs=fs, cutoff=cutoff_lpf)
+    emg_env[:, i] = np.array(manual_normalize(env))
 
-        st.plotly_chart(
-            plot_fsr_expected(t, sig["heel_filt"], sig["toe_filt"], f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"),
-            use_container_width=True,
-            key="gait_fsr_expected_output"
-        )
+st.sidebar.markdown(f"""<div class="success-box">Jumlah Data: {len(data)}</div>""", unsafe_allow_html=True)
+st.sidebar.markdown("### Temporal Parameters:")
+st.sidebar.markdown(f"- Rata-rata Cycle: **{mean_cycle:.3f} s**")
+st.sidebar.markdown(f"- Cadence: **{cadence:.2f} step/min**")
+st.sidebar.markdown(f"- Jumlah Cycle: **{jumlah_cycle}**")
 
-        fig_seg = go.Figure()
-        fig_seg.add_trace(go.Scatter(x=t, y=heel_norm, mode="lines", name="Heel Normalized", line=dict(color="purple", width=2)))
-        fig_seg.add_trace(go.Scatter(x=t, y=toe_norm, mode="lines", name="Toe Normalized", line=dict(color="blue", width=2)))
-        fig_seg.add_trace(go.Scatter(x=t, y=np.ones_like(t) * 0.05, mode="lines", name="Threshold (0.05)", line=dict(color="gray", width=1)))
-        for i, x in enumerate(heel_on): add_vline(fig_seg, x, "lime", "dash", 1.1, "Heel ON" if i == 0 else None)
-        for i, x in enumerate(heel_off): add_vline(fig_seg, x, "red", "dash", 1.1, "Heel OFF" if i == 0 else None)
-        for i, x in enumerate(toe_on): add_vline(fig_seg, x, "cyan", "dot", 1.1, "Toe ON" if i == 0 else None)
-        for i, x in enumerate(toe_off): add_vline(fig_seg, x, "orange", "dot", 1.1, "Toe OFF" if i == 0 else None)
-        fig_seg.update_yaxes(range=[-0.08, 1.08])
-        st.plotly_chart(base_layout(fig_seg, "HEEL dan TOE PHASE DETECTION", "Waktu (s)", "Amplitudo", 420), use_container_width=True, key="gait_gabungan_phase")
+# ===================== TABS ==============================
+tab_gait, tab_emg, tab_pre, tab_cycle_param, tab_stft = st.tabs([
+    "GAIT PARAMETERS",
+    "DYNAMIC EMG",
+    "EMG PREPROCESSING",
+    "SIKLUS & PARAMETER",
+    "STFT ANALYSIS"
+])
 
-        fig_joint = plot_simple(n, [sig["hip_filt"], sig["knee_filt"], sig["ankle_filt"]], ["Hip", "Knee", "Ankle"], ["red", "green", "blue"], "JOINT ANGLE PARAMETERS", "n (sample)", "Degree", 360)
-        st.plotly_chart(fig_joint, use_container_width=True, key="gait_gabungan_joint")
+# ===================== TAB GAIT ==========================
+with tab_gait:
+    subt1, subt2, subt3, subt4 = st.tabs(["Gabungan", "Heel", "Toe", "Joint Angle"])
+    with subt1:
+        input_signals = {
+            "Heel Input": heel_norm,
+            "Toe Input": toe_norm,
+            "Hip Input": hip_raw,
+            "Knee Input": knee_raw,
+            "Ankle Input": ankle_raw,
+        }
+        colors = {"Heel Input":"purple", "Toe Input":"blue", "Hip Input":"red", "Knee Input":"green", "Ankle Input":"orange"}
+        st.plotly_chart(plot_multi_input_output(n, input_signals, "INPUT", "n (sample)", "Amplitude", colors), use_container_width=True, key="gait_input_all")
+        out_signals = {
+            "Heel Filtering": heel_filt,
+            "Toe Filtering": toe_filt,
+            "Hip Filtering": hip_filt,
+            "Knee Filtering": knee_filt,
+            "Ankle Filtering": ankle_filt,
+        }
+        colors2 = {"Heel Filtering":"purple", "Toe Filtering":"blue", "Hip Filtering":"red", "Knee Filtering":"green", "Ankle Filtering":"orange"}
+        st.plotly_chart(plot_multi_input_output(n, out_signals, f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude", colors2), use_container_width=True, key="gait_output_all")
+        st.plotly_chart(make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE INPUT"), use_container_width=True, key="heel_toe_input_dark")
+        st.plotly_chart(make_heel_toe_plot(t_sec, heel_filt, toe_filt, f"OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"), use_container_width=True, key="heel_toe_output_dark")
+    with subt2:
+        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=heel_raw, mode="lines", name="Heel Input", line=dict(color="blue"))]), "HEEL INPUT", "n (sample)", "Amplitude"), use_container_width=True, key="heel_raw")
+        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=heel_filt, mode="lines", name="Heel Filtering", line=dict(color="blue"))]), f"HEEL OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude"), use_container_width=True, key="heel_output")
+        st.plotly_chart(make_phase_detection_plot(t_sec, heel_filt, heel_on, heel_off, "HEEL PHASE DETECTION 5%", "Heel Filtering", "blue"), use_container_width=True, key="heel_phase_detection")
+    with subt3:
+        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=toe_raw, mode="lines", name="Toe Input", line=dict(color="red"))]), "TOE INPUT", "n (sample)", "Amplitude"), use_container_width=True, key="toe_raw")
+        st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=toe_filt, mode="lines", name="Toe Filtering", line=dict(color="red"))]), f"TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Amplitude"), use_container_width=True, key="toe_output")
+        st.plotly_chart(make_phase_detection_plot(t_sec, toe_filt, toe_on, toe_off, "TOE PHASE DETECTION 5%", "Toe Filtering", "red"), use_container_width=True, key="toe_phase_detection")
+    with subt4:
+        st.plotly_chart(plot_multi_input_output(n, {"Hip Input": hip_raw, "Knee Input": knee_raw, "Ankle Input": ankle_raw}, "JOINT ANGLE INPUT", "n (sample)", "Degree", {"Hip Input":"red","Knee Input":"green","Ankle Input":"blue"}), use_container_width=True, key="joint_input")
+        st.plotly_chart(plot_multi_input_output(n, {"Hip Filtering": hip_filt, "Knee Filtering": knee_filt, "Ankle Filtering": ankle_filt}, f"JOINT ANGLE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)", "n (sample)", "Degree", {"Hip Filtering":"red","Knee Filtering":"green","Ankle Filtering":"blue"}), use_container_width=True, key="joint_output")
+        ht, kt, at = st.tabs(["Hip", "Knee", "Ankle"])
+        with ht:
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=hip_raw, mode="lines", name="Hip Input", line=dict(color="red"))]), "HIP JOINT INPUT", "n (sample)", "Degree"), use_container_width=True, key="hip_in")
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=hip_filt, mode="lines", name="Hip Filtering", line=dict(color="red"))]), "HIP JOINT OUTPUT", "n (sample)", "Degree"), use_container_width=True, key="hip_out")
+        with kt:
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=knee_raw, mode="lines", name="Knee Input", line=dict(color="green"))]), "KNEE JOINT INPUT", "n (sample)", "Degree"), use_container_width=True, key="knee_in")
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=knee_filt, mode="lines", name="Knee Filtering", line=dict(color="green"))]), "KNEE JOINT OUTPUT", "n (sample)", "Degree"), use_container_width=True, key="knee_out")
+        with at:
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=ankle_raw, mode="lines", name="Ankle Input", line=dict(color="blue"))]), "ANKLE JOINT INPUT", "n (sample)", "Degree"), use_container_width=True, key="ankle_in")
+            st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=n, y=ankle_filt, mode="lines", name="Ankle Filtering", line=dict(color="blue"))]), "ANKLE JOINT OUTPUT", "n (sample)", "Degree"), use_container_width=True, key="ankle_out")
 
-    with sub[1]:
-        st.subheader("HEEL")
-        st.plotly_chart(plot_simple(n, [sig["heel_raw"]], ["Heel Input"], ["blue"], "HEEL INPUT", "n (sample)", "Amplitude", 300), use_container_width=True, key="heel_input")
-        st.plotly_chart(plot_simple(n, [sig["heel_filt"]], ["Heel Filtering"], ["blue"], "HEEL OUTPUT / HASIL FILTERING", "n (sample)", "Amplitude", 300), use_container_width=True, key="heel_output")
-        st.plotly_chart(plot_phase_single(t, sig["heel_filt"], "Heel", "blue", 0.05), use_container_width=True, key="heel_phase")
-
-    with sub[2]:
-        st.subheader("TOE")
-        st.plotly_chart(plot_simple(n, [sig["toe_raw"]], ["Toe Input"], ["red"], "TOE INPUT", "n (sample)", "Amplitude", 300), use_container_width=True, key="toe_input")
-        st.plotly_chart(plot_simple(n, [sig["toe_filt"]], ["Toe Filtering"], ["red"], "TOE OUTPUT / HASIL FILTERING", "n (sample)", "Amplitude", 300), use_container_width=True, key="toe_output")
-        st.plotly_chart(plot_phase_single(t, sig["toe_filt"], "Toe", "red", 0.05), use_container_width=True, key="toe_phase")
-
-    with sub[3]:
-        st.subheader("JOINT ANGLE")
-        st.plotly_chart(plot_simple(n, [sig["hip_raw"], sig["knee_raw"], sig["ankle_raw"]], ["Hip Input", "Knee Input", "Ankle Input"], ["red", "green", "blue"], "JOINT ANGLE INPUT", "n (sample)", "Degree", 330), use_container_width=True, key="joint_angle_input")
-        st.plotly_chart(plot_simple(n, [sig["hip_filt"], sig["knee_filt"], sig["ankle_filt"]], ["Hip Filtering", "Knee Filtering", "Ankle Filtering"], ["red", "green", "blue"], "JOINT ANGLE OUTPUT / HASIL FILTERING", "n (sample)", "Degree", 330), use_container_width=True, key="joint_angle_output")
-        joint_sub = st.tabs(["Hip", "Knee", "Ankle"])
-        joint_map = [("Hip", "hip", "red"), ("Knee", "knee", "green"), ("Ankle", "ankle", "blue")]
-        for idx, (label, keyname, col) in enumerate(joint_map):
-            with joint_sub[idx]:
-                st.plotly_chart(plot_simple(n, [sig[f"{keyname}_raw"]], [f"{label} Input"], [col], f"{label.upper()} JOINT INPUT", "n (sample)", "Degree", 280), use_container_width=True, key=f"single_joint_{keyname}_input")
-                st.plotly_chart(plot_simple(n, [sig[f"{keyname}_filt"]], [f"{label} Filtering"], [col], f"{label.upper()} JOINT OUTPUT / HASIL FILTERING", "n (sample)", "Degree", 280), use_container_width=True, key=f"single_joint_{keyname}_output")
-
-# =========================================================
-# TAB 2: DYNAMIC EMG
-# =========================================================
-with tabs[1]:
-    st.subheader("DYNAMIC EMG")
-    pilihan = st.selectbox("Pilih sinyal:", ["GABUNGAN 9 OTOT"] + MUSCLE_SHORT, key="dynamic_emg_selectbox")
-    st.caption(f"Cutoff envelope LPF: {cutoff_lpf:.1f} Hz | Threshold aktivasi: {emg_threshold_percent:.1f}%")
-
+# ===================== TAB DYNAMIC EMG ===================
+with tab_emg:
+    st.subheader("Dynamic EMG")
+    pilihan = st.selectbox("Pilih sinyal:", ["GABUNGAN 9 OTOT"] + MUSCLE_SHORT, key="dynamic_select")
     if pilihan == "GABUNGAN 9 OTOT":
-        st.plotly_chart(plot_stacked(t, sig["emg_raw"], MUSCLE_SHORT, "RAW EMG SIGNAL - GABUNGAN 9 OTOT", height=520, line_color="royalblue"), use_container_width=True, key="dynamic_combined_raw_v2")
-        st.plotly_chart(plot_stacked(t, emg_rect, MUSCLE_SHORT, "RECTIFICATION - GABUNGAN 9 OTOT", height=520, line_color="orange"), use_container_width=True, key="dynamic_combined_rect_v2")
-        st.plotly_chart(plot_combined_env_clean(t, emg_env_norm, MUSCLE_SHORT, cycles, emg_threshold, cutoff_lpf), use_container_width=True, key="dynamic_combined_env_clean_v2")
-        st.plotly_chart(plot_activation_expected(t, emg_env_norm, MUSCLE_LONG, emg_threshold, cycles), use_container_width=True, key="dynamic_combined_activation_expected_v2")
+        st.plotly_chart(plot_emg_stacked(t_sec, emg_raw, "RAW EMG (9 CHANNEL)", MUSCLE_SHORT, mode="raw"), use_container_width=True, key="emg_raw_all")
+        st.plotly_chart(plot_emg_stacked(t_sec, emg_rect, "RECTIFICATION (9 CHANNEL)", MUSCLE_SHORT, mode="rect"), use_container_width=True, key="emg_rect_all")
+        st.plotly_chart(plot_emg_stacked(t_sec, emg_env, f"ENVELOPED FILTER (Cutoff: {cutoff_lpf:.1f} Hz) - ON Hijau & OFF Merah Tiap Cycle", MUSCLE_SHORT, mode="env", threshold=emg_threshold, add_onoff=True), use_container_width=True, key="emg_env_all_onoff")
+        st.plotly_chart(plot_activation_bars(t_sec, emg_env, MUSCLE_SHORT, emg_threshold), use_container_width=True, key="emg_act_all")
     else:
         idx = MUSCLE_SHORT.index(pilihan)
-        long_name = MUSCLE_LONG[idx]
-        st.markdown(f"### {pilihan} - {long_name}")
-        st.plotly_chart(plot_simple(t, [sig["emg_raw"][:, idx]], [f"Raw {pilihan}"], ["royalblue"], f"RAW EMG SIGNAL - {pilihan}", "time (sec)", "EMG (mV)", 300), use_container_width=True, key=f"dynamic_{pilihan}_raw")
-        st.plotly_chart(plot_simple(t, [emg_rect[:, idx]], [f"Rectification {pilihan}"], ["orange"], f"RECTIFICATION - {pilihan}", "time (sec)", "Rectified EMG", 300), use_container_width=True, key=f"dynamic_{pilihan}_rect")
+        figs = plot_single_emg(t_sec, emg_raw[:, idx], emg_rect[:, idx], emg_env[:, idx], emg_threshold, pilihan)
+        for j, fig in enumerate(figs):
+            st.plotly_chart(fig, use_container_width=True, key=f"single_emg_{pilihan}_{j}")
 
-        fig_env = go.Figure()
-        fig_env.add_trace(go.Scatter(x=t, y=emg_env_norm[:, idx], mode="lines", name=f"Envelope {pilihan}", line=dict(color="green", width=2)))
-        fig_env.add_trace(go.Scatter(x=t, y=np.ones_like(t) * emg_threshold, mode="lines", name=f"Threshold {emg_threshold_percent:.1f}%", line=dict(color="gray", width=1)))
-        segs = detect_segments_by_cycle(t, emg_env_norm[:, idx], emg_threshold, cycles)
-        for k, (a, b) in enumerate(segs):
-            add_vline(fig_env, a, "lime", "dash", 1.2, "ON" if k == 0 else None)
-            add_vline(fig_env, b, "red", "dash", 1.2, "OFF" if k == 0 else None)
-        fig_env.update_yaxes(range=[-0.08, 1.08])
-        st.plotly_chart(base_layout(fig_env, f"ENVELOPED FILTER - {pilihan} (Cutoff: {cutoff_lpf:.1f} Hz) - ON/OFF Tiap Cycle", "time (sec)", "Normalized EMG", 350), use_container_width=True, key=f"dynamic_{pilihan}_env")
-
-        fig_act = go.Figure()
-        for k, (a, b) in enumerate(segs):
-            fig_act.add_trace(go.Scatter(x=[a, b], y=[1, 1], mode="lines", line=dict(color="lime", width=10), name="Activation" if k == 0 else None, showlegend=(k == 0)))
-        fig_act.update_yaxes(range=[0, 1.4])
-        st.plotly_chart(base_layout(fig_act, f"MUSCLE ACTIVATION CYCLE - {pilihan}", "time (sec)", "Activation", 260), use_container_width=True, key=f"dynamic_{pilihan}_activation")
-
-# =========================================================
-# TAB 3: EMG PREPROCESSING
-# =========================================================
-with tabs[2]:
-    st.subheader("EMG PREPROCESSING")
-    ch = st.selectbox("Pilih channel EMG:", MUSCLE_SHORT, key="emg_pre_select")
+# ===================== TAB EMG PRE =======================
+with tab_pre:
+    ch = st.selectbox("Pilih channel EMG:", MUSCLE_SHORT, key="pre_emg_ch")
     idx = MUSCLE_SHORT.index(ch)
-    st.plotly_chart(plot_simple(t, [sig["emg_raw"][:, idx]], [f"Raw {ch}"], ["royalblue"], "RAW EMG SIGNAL", "time (sec)", "EMG (mV)", 340), use_container_width=True, key=f"pre_raw_{ch}")
+    st.plotly_chart(dark_layout(go.Figure([go.Scatter(x=t_sec, y=emg_raw[:, idx], mode="lines", name=f"{ch} Raw", line=dict(color="cyan"))]), "RAW EMG SIGNAL", "time (sec)", "EMG (mV)"), use_container_width=True, key="pre_raw")
     fig_pre = go.Figure()
-    fig_pre.add_trace(go.Scatter(x=t, y=emg_rect[:, idx], mode="lines", name="Rectified", line=dict(color="orange", width=1.5)))
-    fig_pre.add_trace(go.Scatter(x=t, y=emg_env_raw[:, idx], mode="lines", name="LPF Envelope", line=dict(color="lime", width=2)))
-    st.plotly_chart(base_layout(fig_pre, "PREPROCESSED EMG (RECTIFIED & LPF)", "time (sec)", "Processed EMG", 380), use_container_width=True, key=f"pre_result_{ch}")
+    fig_pre.add_trace(go.Scatter(x=t_sec, y=emg_rect[:, idx], mode="lines", name="Rectified", line=dict(color="orange")))
+    fig_pre.add_trace(go.Scatter(x=t_sec, y=emg_env[:, idx], mode="lines", name="LPF Envelope", line=dict(color="lime", width=2)))
+    st.plotly_chart(dark_layout(fig_pre, f"PREPROCESSED EMG (RECTIFIED & LPF Cutoff {cutoff_lpf:.1f} Hz)", "time (sec)", "Processed EMG"), use_container_width=True, key="pre_result")
 
-# =========================================================
-# TAB 4: GAIT ANALYSIS
-# =========================================================
-with tabs[3]:
-    st.subheader("GAIT ANALYSIS")
-    colA, colB = st.columns([2.5, 1])
+# ===================== TAB SIKLUS & PARAMETER ===========
+with tab_cycle_param:
+    st.subheader("Analisis Kinematik per Siklus (Normalized 0-100%)")
+    if not cycles:
+        st.warning("Siklus tidak terdeteksi. Periksa sinyal Heel/Toe atau threshold.")
+    else:
+        cycle_options = [f"Siklus {i+1}" for i in range(len(cycles))]
+        selected_cycle = st.selectbox("Pilih Siklus untuk Divisualisasikan:", cycle_options, key="select_cycle_gait_analysis")
+        idx_cycle = cycle_options.index(selected_cycle)
+        start_time, end_time, toe_off_time = cycles[idx_cycle]
+        percent_axis = np.linspace(0, 100, 101)
+        hip_cycle = interp_cycle_signal(t_sec, hip_filt, start_time, end_time, percent_axis)
+        knee_cycle = interp_cycle_signal(t_sec, knee_filt, start_time, end_time, percent_axis)
+        ankle_cycle = interp_cycle_signal(t_sec, ankle_filt, start_time, end_time, percent_axis)
+        heel_cycle = interp_cycle_signal(t_sec, heel_filt, start_time, end_time, percent_axis)
+        toe_cycle = interp_cycle_signal(t_sec, toe_filt, start_time, end_time, percent_axis)
+        to_percent = ((toe_off_time - start_time) / (end_time - start_time)) * 100.0
+        st.markdown(f"### Hasil {selected_cycle}")
+        st.plotly_chart(plot_cycle_joint(hip_cycle, percent_axis, to_percent, "Hip Joint", "red", selected_cycle), use_container_width=True, key=f"hip_cycle_{idx_cycle}")
+        st.plotly_chart(plot_cycle_joint(knee_cycle, percent_axis, to_percent, "Knee Joint", "green", selected_cycle), use_container_width=True, key=f"knee_cycle_{idx_cycle}")
+        st.plotly_chart(plot_cycle_joint(ankle_cycle, percent_axis, to_percent, "Ankle Joint", "blue", selected_cycle), use_container_width=True, key=f"ankle_cycle_{idx_cycle}")
 
-    hp_x, hip_cycles, hip_mean = gait_cycle_curves(t, sig["hip_filt"], cycles)
-    kn_x, knee_cycles, knee_mean = gait_cycle_curves(t, sig["knee_filt"], cycles)
-    an_x, ankle_cycles, ankle_mean = gait_cycle_curves(t, sig["ankle_filt"], cycles)
-    he_x, heel_cycles, heel_mean = gait_cycle_curves(t, heel_norm, cycles)
-    to_x, toe_cycles, toe_mean = gait_cycle_curves(t, toe_norm, cycles)
-    percent = hp_x
+        st.markdown(f"### Detail Titik Sentuh (Kinematic Events) - {selected_cycle}")
+        event_df = pd.DataFrame({
+            "Joint": ["Hip", "Hip", "Knee", "Knee", "Ankle", "Ankle"],
+            "Event": ["IC (0%)", f"TO ({to_percent:.2f}%)", "IC (0%)", f"TO ({to_percent:.2f}%)", "IC (0%)", f"TO ({to_percent:.2f}%)"],
+            "Derajat (°)": [
+                round(float(hip_cycle[0]), 2), round(float(np.interp(to_percent, percent_axis, hip_cycle)), 2),
+                round(float(knee_cycle[0]), 2), round(float(np.interp(to_percent, percent_axis, knee_cycle)), 2),
+                round(float(ankle_cycle[0]), 2), round(float(np.interp(to_percent, percent_axis, ankle_cycle)), 2),
+            ]
+        })
+        st.dataframe(event_df, use_container_width=True, hide_index=True)
 
-    ic = 0.0
-    ff = 12.0
-    ho = 33.0
-    to_percent = float(temp_df["stance_percent"].mean()) if not temp_df.empty else 63.0
+        st.divider()
+        st.subheader("Temporal Parameters (Detailed per Cycle)")
+        rows = []
+        for i, (s, e, toe_off) in enumerate(cycles):
+            gait_cycle_time = e - s
+            stance_time = toe_off - s
+            swing_time = e - toe_off
+            stance_percent = (stance_time / gait_cycle_time) * 100 if gait_cycle_time > 0 else 0
+            swing_percent = (swing_time / gait_cycle_time) * 100 if gait_cycle_time > 0 else 0
+            rows.append([i+1, round(s,3), round(toe_off,3), round(e,3), round(gait_cycle_time,3), round(stance_time,3), round(swing_time,3), round(stance_percent,2), round(swing_percent,2)])
+        temporal_df = pd.DataFrame(rows, columns=["cycle", "start_time", "toe_off_time", "end_time", "gait_cycle_time", "stance_time", "swing_time", "stance_percent", "swing_percent"])
+        avg = temporal_df.mean(numeric_only=True)
+        avg["cycle"] = "Rata-rata"
+        temporal_df = pd.concat([temporal_df, pd.DataFrame([avg])], ignore_index=True)
+        st.dataframe(temporal_df, use_container_width=True, hide_index=True)
 
-    with colA:
-        hip_markers = [("HIC", ic, "#2ca02c"), ("HFF", ff, "yellow"), ("HHO", ho, "blue"), ("HTO", to_percent, "cyan")]
-        knee_markers = [("KIC", ic, "#2ca02c"), ("KFF", ff, "yellow"), ("KHO", ho, "blue"), ("KTO", to_percent, "cyan")]
-        ankle_markers = [("AIC", ic, "#2ca02c"), ("AFF", ff, "yellow"), ("AHO", ho, "blue"), ("ATO", to_percent, "cyan")]
+        st.divider()
+        st.subheader("Joint Angle Parameters (Keseluruhan Data)")
+        selected_joint = st.selectbox("Pilih Joint untuk ROM Total:", ["hip", "knee", "ankle"], key="select_joint_rom")
+        joint_signal = {"hip": hip_filt, "knee": knee_filt, "ankle": ankle_filt}[selected_joint]
+        joint_param_df = pd.DataFrame({
+            "Parameter": ["Max (deg)", "Min (deg)", "ROM (deg)"],
+            "Nilai": [round(float(np.max(joint_signal)), 2), round(float(np.min(joint_signal)), 2), round(float(np.max(joint_signal)-np.min(joint_signal)), 2)]
+        })
+        st.dataframe(joint_param_df, use_container_width=True, hide_index=True)
 
-        st.plotly_chart(plot_cycle_joint_expected(percent, hip_mean, hip_cycles, "HIP JOINT", "red", hip_markers), use_container_width=True, key="ga_expected_hip_v2")
-        st.plotly_chart(plot_cycle_joint_expected(percent, knee_mean, knee_cycles, "KNEE JOINT", "red", knee_markers), use_container_width=True, key="ga_expected_knee_v2")
-        st.plotly_chart(plot_cycle_joint_expected(percent, ankle_mean, ankle_cycles, "ANKLE JOINT", "red", ankle_markers), use_container_width=True, key="ga_expected_ankle_v2")
+        st.divider()
+        st.subheader("Tampilan Gait Analysis seperti Delphi")
+        # Rata-rata beberapa siklus
+        hip_cycles = []
+        knee_cycles = []
+        ankle_cycles = []
+        heel_cycles = []
+        toe_cycles = []
+        to_percents = []
+        for s, e, toe_off in cycles[:5]:
+            hip_cycles.append(interp_cycle_signal(t_sec, hip_filt, s, e, percent_axis))
+            knee_cycles.append(interp_cycle_signal(t_sec, knee_filt, s, e, percent_axis))
+            ankle_cycles.append(interp_cycle_signal(t_sec, ankle_filt, s, e, percent_axis))
+            heel_cycles.append(interp_cycle_signal(t_sec, heel_filt, s, e, percent_axis))
+            toe_cycles.append(interp_cycle_signal(t_sec, toe_filt, s, e, percent_axis))
+            to_percents.append((toe_off - s) / (e - s) * 100)
+        hip_mean = np.mean(np.vstack(hip_cycles), axis=0)
+        knee_mean = np.mean(np.vstack(knee_cycles), axis=0)
+        ankle_mean = np.mean(np.vstack(ankle_cycles), axis=0)
+        heel_mean = np.mean(np.vstack(heel_cycles), axis=0)
+        toe_mean = np.mean(np.vstack(toe_cycles), axis=0)
+        to_mean = float(np.mean(to_percents))
+        for k, fig in enumerate(plot_gait_analysis_delphi(percent_axis, hip_mean, knee_mean, ankle_mean, heel_mean, toe_mean, to_mean)):
+            st.plotly_chart(fig, use_container_width=True, key=f"delphi_gait_{k}")
 
-        fig_phase = go.Figure()
-        heel_phase = heel_mean * 2.2
-        toe_phase = toe_mean * 2.2
-        fig_phase.add_trace(go.Scatter(x=percent, y=heel_phase, mode="lines", name="HEEL", line=dict(color="red", width=2, dash="dash")))
-        fig_phase.add_trace(go.Scatter(x=percent, y=toe_phase, mode="lines", name="TOE", line=dict(color="blue", width=2, dash="dot")))
-        fig_phase.add_trace(go.Scatter(x=percent, y=np.ones_like(percent)*0.2, mode="lines", name="THD", line=dict(color="black", width=1)))
-        for nm, xpos, col in [("IC", ic, "#2ca02c"), ("FF", ff, "yellow"), ("HO", ho, "blue"), ("TO", to_percent, "cyan")]:
-            fig_phase.add_trace(go.Scatter(x=[xpos], y=[0.2], mode="markers+text", name=nm, text=[nm], textposition="top center", marker=dict(symbol="square", size=10, color=col, line=dict(color="black", width=1))))
-        st.plotly_chart(base_layout_light(fig_phase, "GAIT PHASE", "gait cycle [%]", "Volt", 285), use_container_width=True, key="ga_expected_phase_v2")
-
-    with colB:
-        st.markdown("## PARAMETER")
-        st.markdown(f"**Jumlah Siklus = {len(cycles)}**")
-
-        stance = to_percent
-        swing = 100 - stance
-        temporal_fields = {
-            "IC [%time]": f"{ic:.1f}±0.0",
-            "FF [%time]": f"{ff:.1f}±2.3",
-            "HO [%time]": f"{ho:.1f}±7.2",
-            "TO [%time]": f"{to_percent:.1f}±1.3",
-            "T stance [%time]": f"{stance:.1f}±1.3",
-            "T swing [%time]": f"{swing:.1f}±1.3",
-            "T cycle [s]": f"{cycle_mean:.2f}",
-            "Cad [strd/min]": f"{cadence:.0f}",
-        }
-        st.markdown("### Temporal Parameters")
-        c1, c2 = st.columns(2)
-        for i, (k, v) in enumerate(temporal_fields.items()):
-            with (c1 if i % 2 == 0 else c2):
-                st.text_input(k, value=v, key=f"ga_expected_temporal_{i}")
-
-        def mean_text(arr, xpos):
-            return f"{float(np.interp(xpos, percent, arr)):.1f}±0.0"
-        st.markdown("### Hip Joint Parameters")
-        st.text_input("HIC [deg] - [%time]", value=f"{mean_text(hip_mean, ic)}     {ic:.1f}±0.0", key="ga_hip_hic_v2")
-        st.text_input("MHEst [deg] - [%time]", value=f"{float(np.min(hip_mean)):.1f}±4.7     {float(percent[np.argmin(hip_mean)]):.1f}±0.6", key="ga_hip_mhest_v2")
-        st.text_input("MHFsw [deg] - [%time]", value=f"{float(np.max(hip_mean)):.1f}±2.8     {float(percent[np.argmax(hip_mean)]):.1f}±1.0", key="ga_hip_mhfsw_v2")
-
-        st.markdown("### Knee Joint Parameters")
-        st.text_input("KIC [deg] - [%time]", value=f"{mean_text(knee_mean, ic)}     {ic:.1f}±0.0", key="ga_knee_kic_v2")
-        st.text_input("MKFst [deg] - [%time]", value=f"{float(np.max(knee_mean[:65])):.1f}±2.0     {float(percent[np.argmax(knee_mean[:65])]):.1f}±1.0", key="ga_knee_mkfst_v2")
-        st.text_input("MKEst [deg] - [%time]", value=f"{float(np.min(knee_mean[:65])):.1f}±1.2     {float(percent[np.argmin(knee_mean[:65])]):.1f}±0.9", key="ga_knee_mkest_v2")
-        st.text_input("MKFsw [deg] - [%time]", value=f"{float(np.max(knee_mean[65:])):.1f}±2.0     {float(percent[65+np.argmax(knee_mean[65:])]):.1f}±1.0", key="ga_knee_mkfsw_v2")
-        st.text_input("MKEsw [deg] - [%time]", value=f"{float(np.min(knee_mean[65:])):.1f}±1.2     {float(percent[65+np.argmin(knee_mean[65:])]):.1f}±0.7", key="ga_knee_mkesw_v2")
-
-        st.markdown("### Ankle Joint Parameters")
-        st.text_input("AIC [deg] - [%time]", value=f"{mean_text(ankle_mean, ic)}     {ic:.1f}±0.0", key="ga_ankle_aic_v2")
-        st.text_input("MAPst [deg] - [%time]", value=f"{float(np.min(ankle_mean[:65])):.1f}±4.9     {float(percent[np.argmin(ankle_mean[:65])]):.1f}±0.3", key="ga_ankle_mapst_v2")
-        st.text_input("MADst [deg] - [%time]", value=f"{float(np.max(ankle_mean[:65])):.1f}±2.6     {float(percent[np.argmax(ankle_mean[:65])]):.1f}±2.1", key="ga_ankle_madst_v2")
-        st.text_input("MAPsw [deg] - [%time]", value=f"{float(np.min(ankle_mean[65:])):.1f}±3.1     {float(percent[65+np.argmin(ankle_mean[65:])]):.1f}±1.2", key="ga_ankle_mapsw_v2")
-        st.text_input("MADsw [deg] - [%time]", value=f"{float(np.max(ankle_mean[65:])):.1f}±2.4     {float(percent[65+np.argmax(ankle_mean[65:])]):.1f}±1.5", key="ga_ankle_madsw_v2")
-
-# =========================================================
-# TAB 5: PARAMETER
-# =========================================================
-with tabs[4]:
-    st.subheader("PARAMETER")
-    st.markdown("### Temporal Parameters (Detailed per Cycle)")
-    st.dataframe(temp_df, use_container_width=True, hide_index=True)
-    st.markdown("### Joint Angle Parameters")
-    selected_joint = st.selectbox("Pilih joint:", ["hip", "knee", "ankle"], key="param_joint_select")
-    st.dataframe(joint_table(sig[f"{selected_joint}_filt"]), use_container_width=True, hide_index=True)
-
-# =========================================================
-# TAB 6: STFT
-# =========================================================
-with tabs[5]:
+# ===================== TAB STFT ==========================
+with tab_stft:
     st.subheader("STFT Analysis")
-    stft_choice = st.selectbox("Pilih sinyal:", ["heel", "toe", "hip", "knee", "ankle"] + MUSCLE_SHORT, key="stft_select")
-    st.plotly_chart(plot_stft(signal_dict[stft_choice], fs, f"STFT Spectrogram - {stft_choice}"), use_container_width=True, key=f"stft_{stft_choice}")
+    signal_options = ["heel", "toe", "hip", "knee", "ankle"] + MUSCLE_SHORT
+    sel = st.selectbox("Pilih sinyal:", signal_options, key="stft_signal_select")
+    sig_map = {"heel": heel_filt, "toe": toe_filt, "hip": hip_filt, "knee": knee_filt, "ankle": ankle_filt}
+    for i, name in enumerate(MUSCLE_SHORT):
+        sig_map[name] = emg_env[:, i]
+    sig = sig_map[sel]
+    freqs, times, power = manual_stft(sig, fs, nperseg=256, overlap=128)
+    fig = go.Figure(data=go.Heatmap(x=times, y=freqs, z=power, colorscale="Viridis"))
+    fig = dark_layout(fig, f"STFT Spectrogram - {sel}", "Time (s)", "Frequency (Hz)", 520)
+    fig.update_yaxes(range=[0, min(30, fs/2)])
+    st.plotly_chart(fig, use_container_width=True, key="stft_heatmap")
