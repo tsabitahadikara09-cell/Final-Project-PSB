@@ -7,18 +7,12 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-# =========================================================
-# FP PSB - GAIT PARAMETER EXTRACTION & DYNAMIC EMG
-# Streamlit single-file version
-# =========================================================
-
 st.set_page_config(
     page_title="FP PSB - Gait Parameter Extraction & Dynamic EMG",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ======================== STYLE ==========================
 st.markdown(
     """
     <style>
@@ -583,10 +577,11 @@ with tab_cycle_param:
             swing_percent = (swing_time / gait_cycle_time) * 100 if gait_cycle_time > 0 else 0
             rows.append([i+1, round(s,3), round(toe_off,3), round(e,3), round(gait_cycle_time,3), round(stance_time,3), round(swing_time,3), round(stance_percent,2), round(swing_percent,2)])
         temporal_df = pd.DataFrame(rows, columns=["cycle", "start_time", "toe_off_time", "end_time", "gait_cycle_time", "stance_time", "swing_time", "stance_percent", "swing_percent"])
-        avg = temporal_df.mean(numeric_only=True)
-        avg["cycle"] = "Rata-rata"
-        temporal_df = pd.concat([temporal_df, pd.DataFrame([avg])], ignore_index=True)
-        st.dataframe(temporal_df, use_container_width=True, hide_index=True)
+        avg_row = {"cycle": "Rata-rata"}
+        for col in ["start_time", "toe_off_time", "end_time", "gait_cycle_time", "stance_time", "swing_time", "stance_percent", "swing_percent"]:
+            avg_row[col] = round(float(temporal_df[col].mean()), 3 if col.endswith("time") or col in ["start_time", "end_time", "toe_off_time"] else 2)
+        temporal_df_display = pd.concat([temporal_df.astype({"cycle": "object"}), pd.DataFrame([avg_row])], ignore_index=True)
+        st.dataframe(temporal_df_display, use_container_width=True, hide_index=True)
 
         st.divider()
         st.subheader("Joint Angle Parameters (Keseluruhan Data)")
