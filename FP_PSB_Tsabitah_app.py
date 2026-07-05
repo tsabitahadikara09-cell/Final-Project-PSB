@@ -1,16 +1,10 @@
 import math
 import io
 from typing import List, Tuple, Dict
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-
-# =========================================================
-# FP PSB - GAIT PARAMETER EXTRACTION & DYNAMIC EMG
-# Streamlit single-file version
-# =========================================================
 
 st.set_page_config(
     page_title="FP PSB - Gait Parameter Extraction & Dynamic EMG",
@@ -18,7 +12,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ======================== STYLE ==========================
 st.markdown(
     """
     <style>
@@ -481,18 +474,20 @@ knee_raw = data[:, 4]
 ankle_raw = data[:, 5]
 emg_raw = data[:, 6:15]
 
-heel_norm = np.array(manual_normalize(heel_raw))
-toe_norm = np.array(manual_normalize(toe_raw))
-heel_filt = np.array(manual_lowpass(heel_norm, fs=fs, cutoff=cutoff_lpf))
-toe_filt = np.array(manual_lowpass(toe_norm, fs=fs, cutoff=cutoff_lpf))
+# Urutan proses Heel/Toe yang benar:
+# INPUT -> LPF (cutoff) -> OUTPUT FILTERING -> NORMALISASI 0-1 -> THRESHOLD 5% -> PHASE DETECTION
+heel_filt = np.array(manual_lowpass(heel_raw, fs=fs, cutoff=cutoff_lpf))
+toe_filt = np.array(manual_lowpass(toe_raw, fs=fs, cutoff=cutoff_lpf))
+heel_norm = np.array(manual_normalize(heel_filt))
+toe_norm = np.array(manual_normalize(toe_filt))
 
 hip_filt = np.array(manual_lowpass(hip_raw, fs=fs, cutoff=cutoff_lpf))
 knee_filt = np.array(manual_lowpass(knee_raw, fs=fs, cutoff=cutoff_lpf))
 ankle_filt = np.array(manual_lowpass(ankle_raw, fs=fs, cutoff=cutoff_lpf))
 
-heel_on, heel_off = extract_phase_crossings(t_sec, heel_filt, 0.05)
-toe_on, toe_off = extract_phase_crossings(t_sec, toe_filt, 0.05)
-mean_cycle, cadence, jumlah_cycle, heel_crossings, cycles = extract_gait_parameters(t_sec, heel_filt, toe_filt, 0.05)
+heel_on, heel_off = extract_phase_crossings(t_sec, heel_norm, 0.05)
+toe_on, toe_off = extract_phase_crossings(t_sec, toe_norm, 0.05)
+mean_cycle, cadence, jumlah_cycle, heel_crossings, cycles = extract_gait_parameters(t_sec, heel_norm, toe_norm, 0.05)
 
 emg_rect = np.abs(emg_raw)
 emg_env = np.zeros_like(emg_rect, dtype=float)
@@ -522,27 +517,27 @@ with tab_gait:
     # ===== GABUNGAN: hanya Heel & Toe sesuai revisi =====
     with subt1:
         st.plotly_chart(
-            make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE INPUT"),
+            make_heel_toe_plot(t_sec, heel_raw, toe_raw, "1. HEEL & TOE INPUT"),
             use_container_width=True,
             key="gab_heel_toe_input"
         )
         st.plotly_chart(
-            make_heel_toe_plot(t_sec, heel_filt, toe_filt, f"HEEL & TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"),
+            make_heel_toe_plot(t_sec, heel_filt, toe_filt, f"2. HEEL & TOE OUTPUT / HASIL FILTERING (Cutoff: {cutoff_lpf:.1f} Hz)"),
             use_container_width=True,
             key="gab_heel_toe_output"
         )
         st.plotly_chart(
-            make_heel_toe_plot(t_sec, heel_norm, toe_norm, "HEEL & TOE NORMALIZED"),
+            make_heel_toe_plot(t_sec, heel_norm, toe_norm, "3. HEEL & TOE NORMALIZED (0-1)"),
             use_container_width=True,
             key="gab_heel_toe_normalized"
         )
         st.plotly_chart(
-            make_heel_toe_threshold_plot(t_sec, heel_filt, toe_filt, threshold=0.05, title="HEEL & TOE THRESHOLDING 5%"),
+            make_heel_toe_threshold_plot(t_sec, heel_norm, toe_norm, threshold=0.05, title="4. HEEL & TOE THRESHOLDING 5%"),
             use_container_width=True,
             key="gab_heel_toe_thresholding"
         )
         st.plotly_chart(
-            make_heel_toe_phase_detection_plot(t_sec, heel_filt, toe_filt, heel_on, heel_off, toe_on, toe_off, threshold=0.05),
+            make_heel_toe_phase_detection_plot(t_sec, heel_norm, toe_norm, heel_on, heel_off, toe_on, toe_off, threshold=0.05, title="5. HEEL & TOE PHASE DETECTION"),
             use_container_width=True,
             key="gab_heel_toe_phase_detection"
         )
@@ -565,12 +560,12 @@ with tab_gait:
             key="heel_normalized_only"
         )
         st.plotly_chart(
-            make_single_threshold_plot(t_sec, heel_filt, threshold=0.05, title="HEEL THRESHOLDING 5%", line_name="Heel Filtering", color="blue"),
+            make_single_threshold_plot(t_sec, heel_norm, threshold=0.05, title="HEEL THRESHOLDING 5%", line_name="Heel Normalized", color="blue"),
             use_container_width=True,
             key="heel_thresholding_only"
         )
         st.plotly_chart(
-            make_phase_detection_plot(t_sec, heel_filt, heel_on, heel_off, "HEEL PHASE DETECTION 5%", "Heel Filtering", "blue"),
+            make_phase_detection_plot(t_sec, heel_norm, heel_on, heel_off, "HEEL PHASE DETECTION 5%", "Heel Normalized", "blue"),
             use_container_width=True,
             key="heel_phase_detection"
         )
@@ -593,12 +588,12 @@ with tab_gait:
             key="toe_normalized_only"
         )
         st.plotly_chart(
-            make_single_threshold_plot(t_sec, toe_filt, threshold=0.05, title="TOE THRESHOLDING 5%", line_name="Toe Filtering", color="red"),
+            make_single_threshold_plot(t_sec, toe_norm, threshold=0.05, title="TOE THRESHOLDING 5%", line_name="Toe Normalized", color="red"),
             use_container_width=True,
             key="toe_thresholding_only"
         )
         st.plotly_chart(
-            make_phase_detection_plot(t_sec, toe_filt, toe_on, toe_off, "TOE PHASE DETECTION 5%", "Toe Filtering", "red"),
+            make_phase_detection_plot(t_sec, toe_norm, toe_on, toe_off, "TOE PHASE DETECTION 5%", "Toe Normalized", "red"),
             use_container_width=True,
             key="toe_phase_detection"
         )
@@ -703,28 +698,32 @@ with tab_cycle_param:
 
         st.divider()
         st.subheader("Tampilan Gait Analysis seperti Delphi")
-        # Rata-rata beberapa siklus
-        hip_cycles = []
-        knee_cycles = []
-        ankle_cycles = []
-        heel_cycles = []
-        toe_cycles = []
-        to_percents = []
-        for s, e, toe_off in cycles[:5]:
-            hip_cycles.append(interp_cycle_signal(t_sec, hip_filt, s, e, percent_axis))
-            knee_cycles.append(interp_cycle_signal(t_sec, knee_filt, s, e, percent_axis))
-            ankle_cycles.append(interp_cycle_signal(t_sec, ankle_filt, s, e, percent_axis))
-            heel_cycles.append(interp_cycle_signal(t_sec, heel_filt, s, e, percent_axis))
-            toe_cycles.append(interp_cycle_signal(t_sec, toe_filt, s, e, percent_axis))
-            to_percents.append((toe_off - s) / (e - s) * 100)
-        hip_mean = np.mean(np.vstack(hip_cycles), axis=0)
-        knee_mean = np.mean(np.vstack(knee_cycles), axis=0)
-        ankle_mean = np.mean(np.vstack(ankle_cycles), axis=0)
-        heel_mean = np.mean(np.vstack(heel_cycles), axis=0)
-        toe_mean = np.mean(np.vstack(toe_cycles), axis=0)
-        to_mean = float(np.mean(to_percents))
-        for k, fig in enumerate(plot_gait_analysis_delphi(percent_axis, hip_mean, knee_mean, ankle_mean, heel_mean, toe_mean, to_mean)):
-            st.plotly_chart(fig, use_container_width=True, key=f"delphi_gait_{k}")
+        st.caption("Grafik ini mengikuti pilihan siklus di dropdown. Saat Siklus diganti, kurva Hip, Knee, Ankle, dan Gait Phase ikut berubah.")
+
+        # PENTING: gunakan data siklus yang sedang dipilih, bukan rata-rata seluruh siklus.
+        hip_delphi = hip_cycle
+        knee_delphi = knee_cycle
+        ankle_delphi = ankle_cycle
+        heel_delphi = heel_cycle
+        toe_delphi = toe_cycle
+        to_delphi = to_percent
+
+        for k, fig in enumerate(
+            plot_gait_analysis_delphi(
+                percent_axis,
+                hip_delphi,
+                knee_delphi,
+                ankle_delphi,
+                heel_delphi,
+                toe_delphi,
+                to_delphi
+            )
+        ):
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key=f"delphi_gait_cycle_{idx_cycle}_{k}"
+            )
 
 # ===================== TAB STFT ==========================
 with tab_stft:
